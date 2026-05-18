@@ -183,6 +183,8 @@ cd /path/to/buildroot
 esptool --chip esp32p4 -p /dev/cu.wchusbserial10 -b 460800 \
   --before default-reset --after hard-reset \
   write-flash --flash-mode dio --flash-size 16MB --flash-freq 40m \
+  0x2000   /path/to/why2025-linux/linux-native/build/bootloader/bootloader.bin \
+  0x8000   /path/to/why2025-linux/linux-native/build/partition_table/partition-table.bin \
   0x10000  /path/to/why2025-linux/linux-native/build/linux-native.bin \
   0x90000  output/images/Image \
   0x710000 output/images/rootfs.squashfs \
