@@ -10,10 +10,10 @@ RTS to hard-reset the badge before each run, so they require the
 | Tool | Purpose |
 |------|---------|
 | `freezetest.py [N=20] [boot_window_s=30] [outdir=/tmp/freezetest]` | Cold-boot reliability. Runs N RTS-reset cycles, classifies each as success/freeze/freeze_alive, dumps boot+dmesg+/proc artifacts on success and last-printk-line on freeze. The harness used to validate the 95–100 % target. |
-| `heartbeat_test.py [max_min=30]` | Light-load uptime detector. Boots, logs in, runs a builtin-only heartbeat loop, reports any ≥90 s gap. Used to confirm the badge is stable when idle. |
-| `loadtest.py [max_min=30]` | Heavy-load uptime: boot → detach fbcon → launch sensorpanel → run instrumented heartbeat that emits `/proc/buddyinfo` and key `/proc/meminfo` fields each cycle. Reproduces the runtime kernel wedge. |
-| `greptest.py [max_min=30]` | Same as loadtest but workload is `(while :; do grep -rl DOESNOTEXIST / >/dev/null; sleep 1; done)`. Reproduces the runtime kernel wedge faster than sensorpanel. |
-| `grepbisect.py` | Bisect: which subtree, when grepped continuously, triggers the wedge. Edit the `TARGETS` list to scope further. |
+| `heartbeat_test.py [max_min=30] [output_dir=/tmp/heartbeat]` | Light-load uptime detector. Boots, logs in, runs a builtin-only heartbeat loop, reports any ≥90 s gap. Used to confirm the badge is stable when idle. |
+| `loadtest.py [max_min=30] [output_dir=/tmp/loadtest]` | Heavy-load uptime: boot → detach fbcon → launch sensorpanel → run instrumented heartbeat that emits `/proc/buddyinfo` and key `/proc/meminfo` fields each cycle. Reproduces the runtime kernel wedge. |
+| `greptest.py [max_min=30] [outdir=/tmp/greptest]` | Same as loadtest but workload is `(while :; do grep -rl DOESNOTEXIST / >/dev/null; sleep 1; done)`. Reproduces the runtime kernel wedge faster than sensorpanel. |
+| `grepbisect.py [outdir=/tmp/grepbisect]` | Bisect: which subtree, when grepped continuously, triggers the wedge. Edit the `TARGETS` list to scope further. |
 
 ## One-shot diagnostics
 

@@ -30,7 +30,7 @@
  obj-$(CONFIG_PWM_HIBVT)		+= pwm-hibvt.o
 --- /dev/null	2026-05-03 14:38:22.219445125 +0200
 +++ b/drivers/pwm/pwm-esp-hosted-c6.c	2026-05-07 08:39:49.731804480 +0200
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,166 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * PWM controller driver fronting the ESP32-C6 LEDC channel that drives
@@ -115,10 +115,12 @@
 +	 * from inside deferred_probe_work, where it races with esp-hosted-NG's
 +	 * bluetooth init and other SPI traffic over the shared cmd queue. The
 +	 * race intermittently wedges the kernel — measured ~15% boot-freeze
-+	 * rate before this skip, 0% after. The C6 slave's BL_DISPLAY_INITIAL_DUTY
-+	 * (76) leaves the backlight in a sensible state by default; userspace
-+	 * can later set arbitrary brightness via sysfs and those subsequent
-+	 * applies run normally.
++	 * rate before this skip, down to a ~1/30 residual after (see
++	 * docs/KNOWN-ISSUES.md; a cur_cmd ownership bug in patch 0008's SPI
++	 * command channel is a candidate contributor to what remains). The
++	 * C6 slave's BL_DISPLAY_INITIAL_DUTY (76) leaves the backlight in a
++	 * sensible state by default; userspace can later set arbitrary
++	 * brightness via sysfs and those subsequent applies run normally.
 +	 */
 +	if (!priv->probe_apply_skipped) {
 +		priv->probe_apply_skipped = true;

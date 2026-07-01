@@ -61,6 +61,40 @@ Suspected to be a deferred-probe-context race when pwm-backlight's
 post-apply class-register path runs concurrently with another deferred
 consumer. Low priority — the boot harness retries any way.
 
+**Candidate contributing cause (unconfirmed, fix applied, pending hardware
+verification):** patch 0011 only skips the *first* `.apply()` call;
+every subsequent brightness change (including the one after the SECOND
+`.apply()`, right after registration) goes through `cmd_set_backlight()`
+in patch 0008's SPI command channel. That channel's timeout-cleanup path
+had a bug — a caller whose own 500 ms wait timed out would unconditionally
+null out `adapter->cur_cmd`/`cmd_resp` even when a *different* command was
+still legitimately in flight, discarding that command's real response and
+letting a second command start before the first one's response returned.
+Patch 0008 now guards the clear with an ownership check (`cur_cmd_seq`,
+see `esp_cmd_release_if_owner()`). This may reduce the residual freeze
+rate, but does not fix the separate, still-open architectural gap
+described next — a command can still be silently starved rather than
+clobbering another one. Needs a `tools/freezetest.py` run to confirm any
+change in frequency; not verified on hardware yet.
+
+**Related, still-open follow-up — `esp_cmd_work()` busy-bail doesn't
+drain the queue:** when `adapter->cur_cmd` is already busy,
+`esp_cmd_work()` (patch 0008) just logs "Busy in another cmd execution"
+and returns, without rescheduling itself (there's a code comment
+admitting this: `/* We should queue ourself here and remove the queuing
+from process_cmd_resp */`). A command that gets queued while busy is only
+serviced if some unrelated caller happens to trigger the workqueue again
+before its own short timeout (500 ms for the WHY2025-added commands, 5 s
+for the generic cfg80211 path) expires — otherwise it just silently times
+out, never having been sent. This is the likely reason the three
+WHY2025-added commands' timeouts fire "often" per their own comments, and
+is a plausible root cause underneath the clobbering bug above. Fixing it
+properly means having `esp_cmd_work` reschedule itself once `cur_cmd`
+actually clears (e.g. from `process_cmd_resp()` and from the timeout
+paths), which is a larger change to the command-channel's locking than
+the ownership-check fix — deferred until it can be validated with a real
+boot-cycle load test.
+
 ## BMI270 internal status check sometimes fails
 
 After firmware upload, the chip's `INTERNAL_STATUS` register sometimes

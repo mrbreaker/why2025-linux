@@ -1675,7 +1675,7 @@
 +}
 --- /dev/null	2026-05-03 14:38:22.219445125 +0200
 +++ b/drivers/net/wireless/espressif/esp_hosted/esp_cmd.c	2026-05-06 21:48:51.882237709 +0200
-@@ -0,0 +1,2428 @@
+@@ -0,0 +1,2443 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Espressif Systems Wireless LAN device driver
@@ -1696,6 +1696,11 @@
 +#define COMMAND_RESPONSE_TIMEOUT (5 * HZ)
 +u8 ap_bssid[MAC_ADDR_LEN];
 +extern u32 raw_tp_mode;
++
++/* Monotonic per-checkout token, stamped in get_free_cmd_node(). Distinguishes
++ * two different logical commands that happen to reuse the same pool slot,
++ * so a stale timeout can't mistake a new command for its own. */
++static u32 esp_cmd_seq_ctr;
 +
 +static int handle_mgmt_tx_done(struct esp_wifi_device *priv,
 +				struct command_node *cmd_node);
@@ -1725,6 +1730,7 @@
 +	cmd_node = list_first_entry(&adapter->cmd_free_queue,
 +				    struct command_node, list);
 +	list_del(&cmd_node->list);
++	cmd_node->cmd_seq = ++esp_cmd_seq_ctr;
 +	spin_unlock_bh(&adapter->cmd_free_queue_lock);
 +
 +	cmd_node->cmd_skb = esp_if_alloc_skb(adapter, ESP_SIZE_OF_CMD_NODE);
@@ -1927,6 +1933,26 @@
 +	spin_unlock_bh(&adapter->cmd_free_queue_lock);
 +}
 +
++/*
++ * Clear adapter->cur_cmd only if it still refers to cmd_node. cmd_node
++ * structs are reused from a small fixed pool (ESP_NUM_OF_CMD_NODES), so a
++ * caller whose own wait_event_interruptible_timeout() fired after its
++ * command was never dequeued (esp_cmd_work busy with someone else's
++ * command) must not blindly null out whatever command is now legitimately
++ * in flight. cmd_seq guards against the pool-slot-reuse (ABA) case that a
++ * raw pointer comparison would miss.
++ */
++static void esp_cmd_release_if_owner(struct esp_adapter *adapter,
++				     struct command_node *cmd_node)
++{
++	spin_lock_bh(&adapter->cmd_lock);
++	if (adapter->cur_cmd == cmd_node &&
++	    adapter->cur_cmd_seq == cmd_node->cmd_seq) {
++		adapter->cur_cmd = NULL;
++		adapter->cmd_resp = 0;
++	}
++	spin_unlock_bh(&adapter->cmd_lock);
++}
 +
 +static int wait_and_decode_cmd_resp(struct esp_wifi_device *priv,
 +		struct command_node *cmd_node)
@@ -1961,10 +1987,7 @@
 +		ret = 0;
 +	}
 +
-+	spin_lock_bh(&adapter->cmd_lock);
-+	adapter->cur_cmd = NULL;
-+	adapter->cmd_resp = 0;
-+	spin_unlock_bh(&adapter->cmd_lock);
++	esp_cmd_release_if_owner(adapter, cmd_node);
 +
 +	switch (cmd_node->cmd_code) {
 +
@@ -2146,6 +2169,7 @@
 +
 +	/* Set as current cmd */
 +	adapter->cur_cmd = cmd_node;
++	adapter->cur_cmd_seq = cmd_node->cmd_seq;
 +
 +	adapter->cmd_resp = 0;
 +
@@ -2608,10 +2632,7 @@
 +	 */
 +	wait_event_interruptible_timeout(priv->adapter->wait_for_cmd_resp,
 +		priv->adapter->cmd_resp == cmd_node->cmd_code, HZ / 2);
-+	spin_lock_bh(&priv->adapter->cmd_lock);
-+	priv->adapter->cur_cmd = NULL;
-+	priv->adapter->cmd_resp = 0;
-+	spin_unlock_bh(&priv->adapter->cmd_lock);
++	esp_cmd_release_if_owner(priv->adapter, cmd_node);
 +	recycle_cmd_node(priv->adapter, cmd_node);
 +	return 0;
 +}
@@ -2654,10 +2675,7 @@
 +	 */
 +	wait_event_interruptible_timeout(priv->adapter->wait_for_cmd_resp,
 +		priv->adapter->cmd_resp == cmd_node->cmd_code, HZ / 2);
-+	spin_lock_bh(&priv->adapter->cmd_lock);
-+	priv->adapter->cur_cmd = NULL;
-+	priv->adapter->cmd_resp = 0;
-+	spin_unlock_bh(&priv->adapter->cmd_lock);
++	esp_cmd_release_if_owner(priv->adapter, cmd_node);
 +	recycle_cmd_node(priv->adapter, cmd_node);
 +
 +	return 0;
@@ -2666,9 +2684,9 @@
 +/* CMD_SET_BACKLIGHT: drive the C6's display backlight LEDC channel from
 + * Linux. Adapter-rooted; callers (pwm-esp-hosted-c6) hold no wifi device.
 + *
-+ * Short-timeout (HZ/2) advisory wait pattern matching patch 0025 for
-+ * cmd_set_ip_address: pwm-backlight's first .apply() runs from inside
-+ * deferred_probe_work, so we MUST NOT camp here for the full 5-s
++ * Short-timeout (HZ/2) advisory wait pattern matching the same approach
++ * used by cmd_set_ip_address above: pwm-backlight's first .apply() runs
++ * from inside deferred_probe_work, so we MUST NOT camp here for the full 5-s
 + * COMMAND_RESPONSE_TIMEOUT — every other deferred probe (DRM client
 + * init, fbcon) queues behind us. Observed slave ack latency is
 + * 150-250 ms, well inside HZ/2; HZ/10 turned out too tight, leaving
@@ -2702,10 +2720,7 @@
 +
 +	wait_event_interruptible_timeout(adapter->wait_for_cmd_resp,
 +		adapter->cmd_resp == cmd_node->cmd_code, HZ / 2);
-+	spin_lock_bh(&adapter->cmd_lock);
-+	adapter->cur_cmd = NULL;
-+	adapter->cmd_resp = 0;
-+	spin_unlock_bh(&adapter->cmd_lock);
++	esp_cmd_release_if_owner(adapter, cmd_node);
 +	recycle_cmd_node(adapter, cmd_node);
 +	return 0;
 +}
@@ -5210,7 +5225,7 @@
 +#endif
 --- /dev/null	2026-05-03 14:38:22.219445125 +0200
 +++ b/drivers/net/wireless/espressif/esp_hosted/include/esp.h	2026-05-05 11:14:25.099838094 +0200
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,186 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Espressif Systems Wireless LAN device driver
@@ -5296,6 +5311,7 @@
 +	struct sk_buff *cmd_skb;
 +	struct sk_buff *resp_skb;
 +	bool in_cmd_queue;
++	u32 cmd_seq;
 +};
 +
 +struct esp_adapter {
@@ -5330,6 +5346,7 @@
 +	spinlock_t              cmd_pending_queue_lock;
 +
 +	struct command_node     *cur_cmd;
++	u32                     cur_cmd_seq;
 +	spinlock_t              cmd_lock;
 +
 +	struct work_struct      mac_flter_work;

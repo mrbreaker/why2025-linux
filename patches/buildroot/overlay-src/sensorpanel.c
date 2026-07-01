@@ -2,7 +2,7 @@
 /*
  * sensorpanel — RV32 NOMMU FLAT renderer that mmap()'s /dev/fb0 (RGB565)
  * and draws live BME680 + BMI270 readings + a temperature sparkline at
- * ~3 Hz. Built for the WHY2025 badge running native Linux 6.18.26 LTS on
+ * ~3 Hz. Built for the WHY2025 badge running native Linux 6.18.35 LTS on
  * the ESP32-P4 HP core. The "look, it's Linux!" demo for FOSDEM 2027.
  *
  * Design constraints (all learned the hard way; see CLAUDE.md / memory):
@@ -455,9 +455,8 @@ static void draw_sparkline(int x0, int y0, int w, int h)
  * The panel is 720×720 RGB565. The DRM driver does the 90° CCW rotation
  * + 16-px panel vshift internally in pipe_update, so userspace draws into
  * a regular upright framebuffer; what we write at (x, y) shows up as
- * what the user sees at that (x, y) on the physical panel. (Per memory
- * `feedback_corner_color_test.md`, this orientation was empirically
- * confirmed during DSI bring-up.)
+ * what the user sees at that (x, y) on the physical panel — confirmed
+ * empirically during DSI bring-up.
  */
 static void render_frame(int frame, int have_bme, int have_bmi,
                          int t_centi, int rh_centi, int p_pa_div10,
@@ -535,7 +534,7 @@ static void render_frame(int frame, int have_bme, int have_bmi,
     fmt_fixed(buf, sizeof buf, frame, 0, 0);
     char foot[80];
     int n = 0;
-    const char *f1 = "Linux 6.18.26 - RV32IMA NOMMU - frame #";
+    const char *f1 = "Linux 6.18.35 - RV32IMA NOMMU - frame #";
     while (*f1) foot[n++] = *f1++;
     int k = 0; while (buf[k]) foot[n++] = buf[k++];
     foot[n] = 0;
@@ -641,9 +640,9 @@ int main(void)
                 /* Driver emits kPa with 9-digit fraction; we keep 1 decimal
                  * place so render_frame's 1-decimal formatter prints "100.3"
                  * for typical sea-level. (This BME680 family chip on the
-                 * WHY2025 reads ~225-250 kPa instead of ~100 kPa per memory
-                 * note project_iio_sensors.md — calibration coefficient
-                 * mismatch between BME680 vs BME688/690; not a unit bug.) */
+                 * WHY2025 reads ~225-250 kPa instead of ~100 kPa — a known
+                 * calibration coefficient mismatch between BME680 vs
+                 * BME688/690, not a unit bug; see HARDWARE.md.) */
                 if (parse_fixed(buf, 1, &v) == 0) {
                     p_milli = v;            /* deci-kPa */
                 }

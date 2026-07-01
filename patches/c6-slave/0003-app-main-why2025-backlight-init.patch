@@ -78,21 +78,28 @@
      debug_log_firmware_version();
  
      capa = get_capabilities();
-@@ -748,6 +801,17 @@
+@@ -748,6 +801,22 @@
          send_bootup_event_to_host(capa);
      }
  
++    debug_set_wifi_logging();
++    ESP_LOGI(TAG, "Initial set up done");
++
 +    /* C6 v0.2: the SLC TX descriptor self-consumes ~200ms after send_queue (silicon
 +     * behavior) before P4 issues CMD53.  P4 tx_process retries OPEN_DATA_PATH every
 +     * ~600ms until it successfully reads the capabilities packet and advances past
 +     * ESP_CONTEXT_RX_READY.  Re-queue the bootup packet on every trigger so a live
 +     * descriptor is present when P4's CMD53 arrives (P4 reduced its sleep to 100ms so
-+     * CMD53 fires ~100ms after OPEN_DATA_PATH, within the ~200ms descriptor window). */
++     * CMD53 fires ~100ms after OPEN_DATA_PATH, within the ~200ms descriptor window).
++     *
++     * This loop never returns in normal operation (xSemaphoreTake blocks
++     * forever, then loops again on each retrigger) -- it must stay last;
++     * anything placed after it here would never run.
++     */
 +    while (xSemaphoreTake(init_sem, portMAX_DELAY) == pdTRUE) {
 +        ESP_LOGI(TAG, "send_bootup: re-triggered by OPEN_DATA_PATH from host");
 +        send_bootup_event_to_host(capa);
 +    }
-+
-     debug_set_wifi_logging();
-     ESP_LOGI(TAG, "Initial set up done");
+-    debug_set_wifi_logging();
+-    ESP_LOGI(TAG, "Initial set up done");
  }
