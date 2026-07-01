@@ -21,6 +21,9 @@ dependencies.lock
 *~
 .DS_Store
 
+# Local AI assistant guidance, not shared via the repo
+CLAUDE.md
+
 # Buildroot tree at the repo root (cloned separately, never checked in).
 # Anchored with a leading slash so it doesn't accidentally match
 # patches/buildroot/.
