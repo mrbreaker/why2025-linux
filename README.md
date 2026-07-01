@@ -17,7 +17,7 @@ excited about this project and its results not to share it with the world.
 
 ## What's running
 
-Native RV32 NOMMU Linux 6.18.26 LTS on the ESP32-P4's HP core. The HP
+Native RV32 NOMMU Linux 6.18.35 LTS on the ESP32-P4's HP core. The HP
 core is a real RISC-V CPU (RV32IMAFC), so this isn't emulation. A
 small ESP-IDF boot shim copies a flat `Image` from flash into 32 MB of
 HEX PSRAM at `0x48000000` and jumps to it. The 8 MB rootfs is a
@@ -31,7 +31,8 @@ Boot to BusyBox login takes about 7 seconds. From there:
   small custom HCI helper.
 - microSD card readable + VFAT-mountable.
 - fbDOOM playable on the panel (`-mb 6`).
-- 95–100% cold-boot reliability over 30 cycles.
+- ~97% cold-boot reliability; the residual ~1/30 boot freeze is a
+  known issue (see [`docs/KNOWN-ISSUES.md`](docs/KNOWN-ISSUES.md)).
 
 ## Screenshots
 
@@ -47,7 +48,7 @@ Boot to BusyBox login takes about 7 seconds. From there:
 configs/        Saved Buildroot defconfig
 linux-native/   ESP-IDF boot shim
 patches/
-  linux/        12-patch kernel series + kernel.config
+  linux/        13-patch kernel series + kernel.config
   buildroot/    rootfs overlay + FLAT userspace utilities
   c6-slave/     patches against upstream esp-hosted-ng
 tools/          pyserial test harnesses

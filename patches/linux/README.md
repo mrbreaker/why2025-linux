@@ -1,12 +1,13 @@
 # Linux kernel patches
 
-Patch series against `linux-6.18.26` (LTS), applied by Buildroot via
+Patch series against `linux-6.18.35` (LTS), applied by Buildroot via
 `BR2_LINUX_KERNEL_PATCH=patches/linux`. Apply order is filename-sort.
 
 The series is squashed: each patch is a single coherent topic that
 ends in the final shipped state, rather than the incremental
 development history. There were 32 in-flight patches during bring-up;
-they're consolidated here into 12 topic patches.
+they were consolidated into 12 topic patches at publication time, and
+new work lands as additional topic patches on top (0013+).
 
 ## Series
 
@@ -24,10 +25,11 @@ they're consolidated here into 12 topic patches.
 | 0010 | `mm-nommu-userspace-pool.patch` | New `linux,nommu-userspace-pool` reserved-memory binding + a NOMMU mmap pool routed through `do_mmap_private`. Reserves 10 MB at 0x49600000 for FLAT-binary `mmap-anon`, so fbdoom -mb 6 has a contiguous 6 MB allocation even when the buddy heap is fragmented. |
 | 0011 | `pwm-esp-hosted-c6-backlight.patch` | `pwm-esp-hosted-c6` PWM controller fronting the ESP32-C6's LEDC channel via SPI (CMD_SET_BACKLIGHT slot 32 over esp-hosted-NG). Skips the very first `.apply()` at probe time to avoid an SPI race with esp-hosted-NG's bluetooth init that otherwise wedges ~15 % of cold boots. The C6 slave's `BL_DISPLAY_INITIAL_DUTY=76` covers the missed write. |
 | 0012 | `dts-esp32p4-why2025-badge.patch` | DTS for the WHY2025 badge: clocks + UART, GPIO banks (matrix-bank0 + bank1), CLIC, SYSTIMER, dw_mmc + slot-1 routing, i2c-gpio bus 0 with TCA8418 keypad + BME680 + BMI270, DSI host + ST7703 panel, esp-hosted-NG SPI device, pwm-c6 + pwm-backlight, mtd-rom `flash@deadbeef` for the squashfs rootfs (boot shim patches the placeholder), nommu userspace pool reservation. |
+| 0013 | `iio-imu-bmi270-init-status-retry.patch` | BMI270: harden the config-load `INTERNAL_STATUS` check (upstream does a single unmasked read after a fixed 140 ms sleep). Poll the masked `message` field (`MSG_MSK`, 20 ms × up to 500 ms) per the datasheet's "wait until init_ok" procedure, and on timeout soft-reset (CMD 0xB6) and re-upload, up to 3 attempts. Logs the raw status byte on each failed attempt. Fixes the intermittent boot-time `-ENODEV` in `docs/KNOWN-ISSUES.md`. |
 
 ## Build configs included here
 
-  - `kernel.config` — canonical Linux 6.18.26 config. Notable knobs:
+  - `kernel.config` — canonical Linux 6.18.35 config. Notable knobs:
     `KALLSYMS=n` (kernel partition is 6.5 MB, KALLSYMS+ALL overflows it),
     `DETECT_HUNG_TASK=y` (30 s timeout), `MAGIC_SYSRQ=y` (incl.
     `MAGIC_SYSRQ_SERIAL`), `WQ_WATCHDOG=y`, `DYNAMIC_DEBUG=y`,
@@ -41,7 +43,9 @@ The Buildroot defconfig lives at `../../configs/why2025_defconfig`.
 The patches above were collapsed from a 32-patch development series.
 The full final-state set was verified against the development tree:
 both produce byte-identical output for every touched file in
-`linux-6.18.26`. If you want to see the bring-up step-by-step, look
+`linux-6.18.26` (the base at the time of the squash; the series has
+since been re-verified to apply cleanly — no fuzz, no offsets — on
+`linux-6.18.35`). If you want to see the bring-up step-by-step, look
 at git history before the squash commit; subsequent work should land
 as new topic patches against the current series rather than as
 incremental fixes.

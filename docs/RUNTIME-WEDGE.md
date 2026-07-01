@@ -17,8 +17,9 @@ test the reproducer:
 ```
 
 If WFI-based idle path doesn't trigger the wedge, ship it. If the
-kernel hangs at first idle, revert (CLIC may still mishandle WFI on
-this v0.9 silicon).
+kernel hangs at first idle, revert (the CLIC — a v0.9-spec
+implementation — may still mishandle WFI wake-up on this rev v1.0
+silicon).
 
 ## 2. Audit `mm/nommu.c` and `fs/binfmt_flat.c` for races (1–2 hr)
 
@@ -38,22 +39,31 @@ out.
 
 ## 3. Disable BMI270 retry-trigger and pwm-c6 first-apply skip (1 hr)
 
-Both ship in patch 0035 and fire from `late_initcall` /
+These ship in patches 0009 (BMI270 retry-trigger) and 0011 (pwm-c6
+first-apply skip) and fire from `late_initcall` /
 deferred_probe_work. They might keep state alive that interacts with
 sustained fork churn. Run the reproducer with each reverted (one at
 a time) to confirm they're not contributing.
 
-## 4. CMA reservation for FLAT exec (half-day)
+## 4. Pool-toggle A/B test (half-day)
 
-Reserve a contiguous DT-described pool — same shape as the existing
-`linux,nommu-userspace-pool` from patch 0032, but a separate region
-specifically for the FLAT exec backing. Patch `binfmt_flat.c` to
-allocate the program block from this pool instead of the buddy heap.
-Different allocator code path entirely → likely sidesteps whatever's
-racy in the buddy alloc/free path on this silicon.
+The contiguous `linux,nommu-userspace-pool` is already implemented:
+patch 0010 hooks it into `do_mmap_private`, and patch 0012's DTS
+reserves 10 MB at `0x49600000` (`app_pool`), so the reproducer's
+fork+exec allocations already run through the gen_pool path before
+falling back to buddy. The discriminating experiment is therefore the
+*inverse* of adding a pool: remove (or `status = "disabled"`) the
+`app_pool` DT node — patch 0010's hook is an explicit no-op without
+it — rebuild, and rerun the reproducer.
 
-Already on the project's "next steps" roadmap; this would be the
-forcing function to actually do it.
+  - Wedge persists → the pool path is exonerated; suspect buddy /
+    nommu core or a non-allocator cause.
+  - Wedge disappears or changes timing → `mm/nommu_userspace_pool.c`
+    and the `do_mmap_private` hook are implicated. Note the known
+    audit gap: patch 0010 only intercepts frees at the
+    `__put_nommu_region` full-free site, so a partial unmap of a
+    pool-backed region could leak pool pages into the buddy
+    allocator.
 
 ## 5. `CONFIG_PROVE_LOCKING=y` (1 hr)
 
@@ -92,6 +102,8 @@ unless the partition headroom permits it.
   - Simpler: `(while :; do /bin/true; done) &` after login (seconds)
   - `drivers/misc/esp32p4-watchdog-blink.c` — kernel kthread that
     pr_alerts every 5 s and toggles backlight via cmd_set_backlight.
-    Not in default build (commented `obj-y` in `drivers/misc/Makefile`
-    of the in-tree-applied source). Distinguishes "scheduler dead"
-    from "printk dead" from "SPI dead".
+    **Not in this repo** — the source was lost in the 32→12 patch
+    squash; only the commented-out `obj-y` hook in patch 0005's
+    `drivers/misc/Makefile` hunk survives. Needs to be rewritten
+    before use. Distinguishes "scheduler dead" from "printk dead"
+    from "SPI dead".

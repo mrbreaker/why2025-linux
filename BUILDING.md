@@ -2,7 +2,7 @@
 
 Three artifacts to build, in order:
 
-  1. **Kernel + rootfs** via Buildroot 2025.02.4 (Linux 6.18.26 LTS).
+  1. **Kernel + rootfs** via Buildroot 2025.02.4 (Linux 6.18.35 LTS).
   2. **Boot shim** via ESP-IDF v5.5.3 (the small ESP32-P4 application
      that loads the kernel into PSRAM and jumps to it).
   3. **C6 slave firmware** via ESP-IDF (the ESP32-C6 coprocessor that
@@ -98,7 +98,7 @@ Outputs land in `output/images/`:
 
   - `Image` — flat kernel image (~6.5 MB)
   - `rootfs.squashfs` — read-only root (~5 MB)
-  - `output/build/linux-6.18.26/arch/riscv/boot/dts/espressif/esp32p4-why2025.dtb`
+  - `output/build/linux-6.18.35/arch/riscv/boot/dts/espressif/esp32p4-why2025.dtb`
 
 The buildroot overlay (`patches/buildroot/overlay/`) is applied
 automatically if the buildroot config points at it. Post-build script in
@@ -132,8 +132,8 @@ Output: `build/linux-native.bin` at flash offset `0x10000`.
 The boot shim does:
   - Maps the rootfs partition into the IDF cache window.
   - Two-tier MMU prewalk (coarse 64 KB stride + fine 64 B stride for the
-    last 64 KB to fix near-EOF squashfs metadata reads — see
-    `docs/KNOWN-ISSUES.md`).
+    last 64 KB to fix near-EOF squashfs metadata reads — see the comments
+    in `linux-native/main/main.c`).
   - Patches the DTB's `flash@deadbeef` placeholder with the actual VA + size.
   - Jumps to `0x48000000`.
 
@@ -188,7 +188,7 @@ esptool --chip esp32p4 -p /dev/cu.wchusbserial10 -b 460800 \
   0x10000  /path/to/why2025-linux/linux-native/build/linux-native.bin \
   0x90000  output/images/Image \
   0x710000 output/images/rootfs.squashfs \
-  0xF10000 output/build/linux-6.18.26/arch/riscv/boot/dts/espressif/esp32p4-why2025.dtb
+  0xF10000 output/build/linux-6.18.35/arch/riscv/boot/dts/espressif/esp32p4-why2025.dtb
 ```
 
 When only the kernel changed, drop the rootfs/dtb lines. When only
@@ -222,7 +222,7 @@ After login on the badge:
 
 ```sh
 # 6 MB Z-zone — biggest setting that fits the userspace mmap pool reserved
-# by patch 0032 (10 MB at 0x49600000). -iwad path may differ depending on
+# by patch 0010 (10 MB at 0x49600000). -iwad path may differ depending on
 # the Buildroot version; check /usr/share/games/doom/ first.
 fbdoom -iwad /usr/share/games/doom/doom1.wad -mb 6
 ```

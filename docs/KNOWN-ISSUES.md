@@ -54,7 +54,7 @@ See `docs/RUNTIME-WEDGE.md` for the planned next steps.
 
 ## Boot residual ~1/30 freeze at pwm-c6 line (deferred)
 
-After all the patch-0035 fixes, ~1 in 30 cold boots still wedges
+After all the pwm-c6 first-apply fixes (patch 0011), ~1 in 30 cold boots still wedges
 silently right after the kernel prints
 `esp-hosted-c6-pwm soc:pwm-c6: esp32-c6 backlight pwm registered`.
 Suspected to be a deferred-probe-context race when pwm-backlight's
@@ -63,7 +63,35 @@ consumer. Low priority — the boot harness retries any way.
 
 ## BMI270 internal status check sometimes fails
 
-Cosmetic regression from the kernel 6.12 → 6.18 bump. After firmware
-upload, the chip's `INTERNAL_STATUS` register sometimes doesn't read
-`MSG_INIT_OK`, and the driver returns -ENODEV. Boot continues fine;
-sensor isn't enumerated on those cycles. Not investigated yet.
+After firmware upload, the chip's `INTERNAL_STATUS` register sometimes
+doesn't read `MSG_INIT_OK`, and the driver returns -ENODEV. Boot
+continues fine; sensor isn't enumerated on those cycles.
+
+This surfaced with the 6.12 → 6.18 bump but is **not** an upstream
+regression: the `drivers/iio/imu/bmi270/` driver first shipped in
+v6.13, and its firmware-load/status-check path is unchanged from v6.13
+through current mainline — a single unmasked `INTERNAL_STATUS` read
+after a fixed 140–160 ms sleep, with no poll loop and no retry of the
+upload. The 6.12-era build masked one-shot init failures behind an
+`S05bmi270` sysfs-rebind init script that was dropped from the overlay
+when the in-kernel retry-trigger (patch 0009) replaced it — but patch
+0009 only retries `request_firmware()` -ENOENT, not a failed
+`INTERNAL_STATUS` check, which is terminal.
+
+The upstream check is also over-strict: it compares the whole register
+against `MSG_INIT_OK` (0x01) instead of masking with
+`BMI270_INTERNAL_STATUS_MSG_MSK` (defined but unused upstream), so any
+set error/reserved bit fails init even when the message field reads
+INIT_OK. The 8 KB config upload also runs over a ~100 kHz bit-banged
+I²C bus with weak ~45 kΩ internal pull-ups, leaving little timing
+margin.
+
+**Fix shipped (pending hardware verification):** patch 0013 replaces
+the single read with a masked poll (20 ms steps, 500 ms ceiling) and,
+on timeout, soft-resets the chip (CMD 0xB6) and re-uploads, up to 3
+attempts, logging the raw `internal_status` byte per failed attempt.
+To verify: ~50 cold boots via a loop around `tools/bootcap.py`,
+requiring `iio:device1` to enumerate on every cycle; the logged status
+byte on any failing attempt discriminates the underlying cause
+(0x00/0x04 = slow init, 0x02 = corrupted upload, high bits = was the
+over-strict compare).

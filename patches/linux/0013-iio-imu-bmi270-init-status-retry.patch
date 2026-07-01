@@ -1,0 +1,147 @@
+--- a/drivers/iio/imu/bmi270/bmi270_core.c
++++ b/drivers/iio/imu/bmi270/bmi270_core.c
+@@ -112,6 +112,9 @@
+ #define BMI270_PWR_CTRL_ACCEL_EN_MSK			BIT(2)
+ #define BMI270_PWR_CTRL_TEMP_EN_MSK			BIT(3)
+ 
++#define BMI270_CMD_REG					0x7e
++#define BMI270_CMD_SOFTRESET				0xb6
++
+ #define BMI270_STEP_SC26_WTRMRK_MSK			GENMASK(9, 0)
+ #define BMI270_STEP_SC26_RST_CNT_MSK			BIT(10)
+ #define BMI270_STEP_SC26_EN_CNT_MSK			BIT(12)
+@@ -1172,6 +1175,14 @@
+  * that wrecked boot reliability under the old S05bmi270 sysfs-rebind path.
+  */
+ #define BMI270_FW_RETRY_DELAY_MS	5000
++
++/*
++ * The config load occasionally fails (INTERNAL_STATUS.message never
++ * reaches init_ok) and a soft-reset + re-upload recovers it. Each extra
++ * attempt costs at most ~1.2 s (8 KB upload + 500 ms status poll) and
++ * only runs on failing boots.
++ */
++#define BMI270_INIT_MAX_TRIES		3
+ 
+ static int bmi270_fw_retry_count;
+ static void bmi270_fw_retry_fn(struct work_struct *work)
+@@ -1180,11 +1191,11 @@
+ }
+ static DECLARE_DELAYED_WORK(bmi270_fw_retry_work, bmi270_fw_retry_fn);
+ 
+-static int bmi270_write_calibration_data(struct bmi270_data *data)
++static int bmi270_upload_init_config(struct bmi270_data *data,
++				     const struct firmware *init_data)
+ {
++	unsigned int status;
+ 	int ret;
+-	int status = 0;
+-	const struct firmware *init_data;
+ 	struct device *dev = data->dev;
+ 	struct regmap *regmap = data->regmap;
+ 
+@@ -1206,21 +1217,9 @@
+ 	if (ret)
+ 		return dev_err_probe(dev, ret,
+ 				     "Failed to prepare device to load init data");
+-
+-	ret = request_firmware(&init_data, data->chip_info->fw_name, dev);
+-	if (ret == -ENOENT &&
+-	    bmi270_fw_retry_count < BMI270_FW_MAX_RETRIES) {
+-		bmi270_fw_retry_count++;
+-		schedule_delayed_work(&bmi270_fw_retry_work,
+-				      msecs_to_jiffies(BMI270_FW_RETRY_DELAY_MS));
+-		return -EPROBE_DEFER;
+-	}
+-	if (ret)
+-		return dev_err_probe(dev, ret, "Failed to load init data file");
+ 
+ 	ret = regmap_bulk_write(regmap, BMI270_INIT_DATA_REG,
+ 				init_data->data, init_data->size);
+-	release_firmware(init_data);
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "Failed to write init data");
+ 
+@@ -1231,19 +1230,73 @@
+ 				     "Failed to stop device initialization");
+ 
+ 	/*
+-	 * Wait at least 140ms for the device to complete configuration.
+-	 * This delay is specified in table C of the datasheet.
++	 * Table C of the datasheet specifies 140ms to complete the
++	 * configuration load, but the datasheet's init procedure is "wait
++	 * until INTERNAL_STATUS.message reads init_ok", and the message
++	 * field occupies only bits 3:0 — the high bits carry unrelated
++	 * error flags. Poll the masked field instead of a single
++	 * fixed-delay unmasked read; the chip occasionally needs longer,
++	 * especially behind slow buses.
+ 	 */
+-	usleep_range(140000, 160000);
++	ret = regmap_read_poll_timeout(regmap, BMI270_INTERNAL_STATUS_REG,
++				       status,
++				       (status & BMI270_INTERNAL_STATUS_MSG_MSK) ==
++				       BMI270_INTERNAL_STATUS_MSG_INIT_OK,
++				       20000, 500000);
++	if (ret == -ETIMEDOUT)
++		dev_warn(dev, "Init not confirmed, internal_status=0x%02x",
++			 status);
+ 
+-	ret = regmap_read(regmap, BMI270_INTERNAL_STATUS_REG, &status);
+-	if (ret)
+-		return dev_err_probe(dev, ret, "Failed to read internal status");
++	return ret;
++}
+ 
+-	if (status != BMI270_INTERNAL_STATUS_MSG_INIT_OK)
+-		return dev_err_probe(dev, -ENODEV, "Device failed to initialize");
++static int bmi270_write_calibration_data(struct bmi270_data *data)
++{
++	int ret;
++	int tries;
++	const struct firmware *init_data;
++	struct device *dev = data->dev;
++	struct regmap *regmap = data->regmap;
+ 
+-	return 0;
++	ret = request_firmware(&init_data, data->chip_info->fw_name, dev);
++	if (ret == -ENOENT &&
++	    bmi270_fw_retry_count < BMI270_FW_MAX_RETRIES) {
++		bmi270_fw_retry_count++;
++		schedule_delayed_work(&bmi270_fw_retry_work,
++				      msecs_to_jiffies(BMI270_FW_RETRY_DELAY_MS));
++		return -EPROBE_DEFER;
++	}
++	if (ret)
++		return dev_err_probe(dev, ret, "Failed to load init data file");
++
++	for (tries = 0; tries < BMI270_INIT_MAX_TRIES; tries++) {
++		if (tries) {
++			/*
++			 * The chip only accepts a config load from freshly
++			 * reset state, so soft-reset before retrying. The
++			 * reset re-enables advanced power save; the next
++			 * attempt clears it again.
++			 */
++			ret = regmap_write(regmap, BMI270_CMD_REG,
++					   BMI270_CMD_SOFTRESET);
++			if (ret)
++				break;
++			usleep_range(2000, 4000);
++		}
++
++		ret = bmi270_upload_init_config(data, init_data);
++		if (ret != -ETIMEDOUT)
++			break;
++	}
++
++	release_firmware(init_data);
++
++	if (ret == -ETIMEDOUT)
++		return dev_err_probe(dev, -ENODEV,
++				     "Device failed to initialize after %d attempts",
++				     BMI270_INIT_MAX_TRIES);
++
++	return ret;
+ }
+ 
+ static int bmi270_configure_imu(struct bmi270_data *data)
