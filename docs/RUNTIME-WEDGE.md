@@ -12,6 +12,18 @@ ascending order of cost; each one independently moves the needle.
 > See KNOWN-ISSUES "Candidate fixes shipped". **Run the reproducer
 > against a build with these before investing in steps 3-6.** They are
 > not yet built or hardware-verified.
+>
+> The "non-printk dead-man's-switch" this plan kept wishing for now
+> exists: patches 0019+0020 arm the TIMG0 MWDT from probe (kernel-fed —
+> feeds stop when the scheduler dies, chip hard-resets in ≤30 s; no
+> more deep esptool reset, so unattended soak campaigns work) and add a
+> pstore/ramoops carveout so the pre-wedge console tail survives the
+> reset (`mount -t pstore pstore /sys/fs/pstore` after reboot). The
+> PSRAM-persistence premise for ramoops is unverified — checking that a
+> deliberate `echo c > /proc/sysrq-trigger` panic leaves readable
+> records is the first thing to test. `reboot` also works now (MWDT
+> restart handler), and PANIC_TIMEOUT=5 turns every oops into a clean
+> reboot instead of a hang.
 
 ## 1. Remove `idle=poll` from cmdline (cheap, ~5 min)
 

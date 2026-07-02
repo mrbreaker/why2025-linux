@@ -11,7 +11,9 @@ Reproducer (after login, badge boots cleanly):
 Kernel goes silent within seconds — no Oops, no `DETECT_HUNG_TASK`
 output, no panic. UART input is also dead, so `tools/loadtest.py`'s
 post-wedge state-capture commands return nothing. Recovery requires a
-deep esptool reset.
+deep esptool reset. (With patches 0019+0020 — unverified on hardware —
+a wedge should instead auto-reset via the MWDT within 30 s and leave
+the pre-wedge console tail in pstore/ramoops; see RUNTIME-WEDGE.md.)
 
 ### What's been ruled out
 - **Memory exhaustion.** `/proc/buddyinfo` and `/proc/meminfo` stay

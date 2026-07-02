@@ -31,6 +31,8 @@ new work lands as additional topic patches on top (0013+).
 | 0016 | `clocksource-esp32p4-systimer-hardening.patch` | Wedge candidate fix: `set_next_event` re-reads the counter after arming and returns `-ETIME` if the oneshot target already passed unfired (previously a single cache-cold overrun parked the alarm ~2^52 ticks out = permanent silent tick death, with every watchdog tick-fed). Also fixes torn 52-bit hi/lo counter reads with a lock-free hi/lo/hi retry (a re-latch from IRQ context across a low-word wrap jolted timekeeping by ±268 s). |
 | 0017 | `esp-hosted-spi-upstream-sync-fixes.patch` | Restore three fixes present in the upstream `release/ng-1.0.6` tag that the in-tree port (forked from an earlier snapshot) lacks: `skb_put_padto(tx_skb, SPI_BUF_SIZE)` before each transfer (was a constant ~1.5 KB out-of-bounds heap read clocked out to the C6 on every small packet), NULL checks after both `esp_if_alloc_skb()` calls in `esp_spi_work`, and `atomic_set(&tx_pending, 0)` on `esp_deinit_module`/`spi_exit` plus the symmetric all-priorities increment (counter drift defeated the TX cap after a C6 reboot). |
 | 0018 | `pwm-esp-hosted-c6-brightness-dedupe.patch` | Value-level dedupe in `pwm-esp-hosted-c6`: cache the last duty actually sent, seeded with the C6 slave's `BL_DISPLAY_INITIAL_DUTY` (76), and elide same-value `cmd_set_backlight()` writes. The 0011 first-apply skip only swallowed pwm_init_state's apply; pwm-backlight's post-register second apply still sent a provably redundant brightness-76 command inside the deferred-probe race window blamed for the residual ~1/30 boot freeze. With the dedupe, the boot path issues zero backlight SPI traffic. Pending `tools/freezetest.py` verification. |
+| 0019 | `watchdog-esp32p4-mwdt.patch` | New `esp32p4_wdt` driver: TIMG0 MWDT with stage 0 = system reset, started at probe with `WDOG_HW_RUNNING` so the watchdog core's worker feeds it from boot until userspace opens `/dev/watchdog` — a scheduler-killing wedge (or boot freeze) stops the feeds and the chip hard-resets within `timeout-sec` (30 s). Also registers the machine restart handler, giving this kernel its first working `reboot`. Register facts sourced from ESP-IDF v5.5.3 `hw_ver1` headers (MWDT clock = fixed 40 MHz XTAL, module clock default-enabled, `CONF_UPDATE_EN` strobe, `0x50d83aa1` write-protect key). Unverified on hardware. |
+| 0020 | `dts-why2025-wdt-ramoops.patch` | DTS: `watchdog@500c2000` node (timeout-sec 30) and a 128 KB `ramoops` reserved-memory carveout at `0x495e0000` (just below app_pool; 4×8 KB dump records + 96 KB console ring, RS ECC on). With `CONFIG_PSTORE_CONSOLE=y` the pre-wedge console tail should survive the MWDT reset — premised on PSRAM retaining contents across a system reset, which is plausible but **unverified**; if it doesn't hold, ramoops reports invalid records and costs only the 128 KB. |
 
 ## Build configs included here
 
@@ -43,6 +45,15 @@ new work lands as additional topic patches on top (0013+).
     `DYNAMIC_DEBUG=y`, `EXT4_FS=n` (root is squashfs, microSD is
     VFAT-only — reclaims partition budget), `INITRAMFS_SOURCE=`
     (squashfs root), `CMDLINE_FORCE=y` with `idle=poll`.
+    Since the 0019/0020 diagnostics work: `WATCHDOG=y` + `ESP32P4_WDT=y`
+    (kernel-fed MWDT dead-man's switch + restart handler), `PSTORE=y` +
+    `PSTORE_RAM=y` + `PSTORE_CONSOLE=y` (ramoops carveout in the DTS),
+    `PANIC_TIMEOUT=5` (oops/panic now reboots instead of hanging), and
+    dead-hardware trims funding the additions against the 6.5 MB
+    partition cap: `BT_BREDR=n` (BLE-only radio), `KEYBOARD_ATKBD=n` +
+    `INPUT_MOUSE=n` + `SERIO=n` (no PS/2 hardware), `IOSCHED_BFQ=n` +
+    `MQ_IOSCHED_KYBER=n`, `IPV6_SIT=n`, `LEGACY_PTYS=n`, and two of the
+    three boot logos.
 
 The Buildroot defconfig lives at `../../configs/why2025_defconfig`.
 

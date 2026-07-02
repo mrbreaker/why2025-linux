@@ -95,6 +95,7 @@ Both share the i2c-gpio bus 0:
 
 ```
 0x48000000              kernel + RAM
+0x495E0000  +128 KB     pstore/ramoops (console log across WDT resets)
 0x49600000  +10 MB      NOMMU userspace pool (FLAT exec backing)
 0x49ffffff
 ```
