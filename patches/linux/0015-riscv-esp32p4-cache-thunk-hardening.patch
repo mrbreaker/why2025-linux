@@ -1,0 +1,133 @@
+--- a/arch/riscv/include/asm/cacheflush.h
++++ b/arch/riscv/include/asm/cacheflush.h
+@@ -14,20 +14,36 @@
+ 	/*
+ 	 * ESP32-P4 HP core: fence.i does not flush the external-memory
+ 	 * cache hierarchy (L1 I$/D$/L2). Use the ROM helpers at fixed
+-	 * addresses to writeback all of D$/L2 and invalidate all of
+-	 * I$/L2. Required for self-modifying code / loaded binaries in
+-	 * PSRAM (binfmt_flat, kernel modules, eBPF, ...).
++	 * addresses to writeback D$/L2 and invalidate I$. Required for
++	 * self-modifying code / loaded binaries in PSRAM (binfmt_flat,
++	 * kernel modules, eBPF, ...).
+ 	 *
+ 	 *   Cache_WriteBack_All(map)   @ 0x4fc00414
+ 	 *   Cache_Invalidate_All(map)  @ 0x4fc00404
+ 	 *   L1 DCACHE=BIT(4)=0x10, L1 ICACHE_MASK=0x3, L2=BIT(5)=0x20
++	 *
++	 * The ROM cache-sync engine drives one shared set of CACHE_SYNC
++	 * registers and is not reentrant -- ESP-IDF wraps every call in a
++	 * spinlock critical section. The same thunks are invoked from IRQ
++	 * context by the noncoherent-DMA sync ops (esp32p4_cache.c), so
++	 * run the sequence with local IRQs disabled or a nested DMA sync
++	 * can clobber an in-flight operation.
++	 *
++	 * Deliberately NO whole-L2 invalidate here: L2 is unified, so
++	 * after the writeback it already serves coherent I-fetches, and
++	 * an inv-all(L2) would destroy any line dirtied between the two
++	 * ops (e.g. our own stack traffic evicted from L1D) -- silent
++	 * kernel-memory corruption, paid on every exec.
+ 	 */
+ 	void (*wb_all)(uint32_t)  = (void (*)(uint32_t))0x4fc00414UL;
+ 	void (*inv_all)(uint32_t) = (void (*)(uint32_t))0x4fc00404UL;
++	unsigned long flags;
++
++	local_irq_save(flags);
+ 	wb_all(0x10);   /* L1 DCACHE writeback */
+ 	wb_all(0x20);   /* L2 writeback */
+ 	inv_all(0x03);  /* L1 ICACHE (both halves) invalidate */
+-	inv_all(0x20);  /* L2 invalidate */
++	local_irq_restore(flags);
+ #endif
+ 	asm volatile ("fence.i" ::: "memory");
+ }
+@@ -41,12 +57,29 @@
+ 	void (*inv_addr)(uint32_t, uint32_t, uint32_t) =
+ 		(void (*)(uint32_t, uint32_t, uint32_t))0x4fc003e4UL;
+ 	uint32_t size = (uint32_t)(end - start);
++	unsigned long flags;
++
++	/* Same non-reentrancy rule as local_flush_icache_all(). */
++	local_irq_save(flags);
+ 	wb_addr(0x10, (uint32_t)start, size);   /* L1 D writeback */
+ 	wb_addr(0x20, (uint32_t)start, size);   /* L2 writeback */
+ 	inv_addr(0x03, (uint32_t)start, size);  /* L1 I invalidate */
+ 	inv_addr(0x20, (uint32_t)start, size);  /* L2 invalidate */
+-#endif
++	local_irq_restore(flags);
++	/*
++	 * The ranged ops above are the complete maintenance for [start,
++	 * end) -- do NOT fall through to local_flush_icache_all(). The
++	 * old whole-hierarchy chain made the ranged ops redundant and
++	 * evicted the entire warm L2 working set at PSRAM latency on
++	 * every binfmt_flat exec. The ranged L2 invalidate is safe here
++	 * (unlike the whole-L2 one) because the range covers only the
++	 * freshly written text that was just written back under the same
++	 * IRQ-off window.
++	 */
++	asm volatile ("fence.i" ::: "memory");
++#else
+ 	local_flush_icache_all();
++#endif
+ }
+ 
+ #define PG_dcache_clean PG_arch_1
+--- a/drivers/cache/esp32p4_cache.c
++++ b/drivers/cache/esp32p4_cache.c
+@@ -18,6 +18,7 @@
+  */
+ 
+ #include <linux/init.h>
++#include <linux/irqflags.h>
+ #include <linux/printk.h>
+ #include <linux/types.h>
+ #include <asm/cacheflush.h>
+@@ -31,24 +32,46 @@
+ #define esp32p4_cache_writeback  ((esp32p4_cache_op_t)0x4fc003f4UL)
+ #define esp32p4_cache_invalidate ((esp32p4_cache_op_t)0x4fc003e4UL)
+ 
++/*
++ * The ROM cache-sync engine is not reentrant (one shared set of
++ * CACHE_SYNC registers; ESP-IDF wraps every call in a spinlock). These
++ * ops run from IRQ/tasklet context (dw_mmc IDMAC, GDMA) while the
++ * icache-flush inlines in asm/cacheflush.h call the same thunks from
++ * process context, so each sequence must be IRQ-exclusive.
++ *
++ * Invalidates run outer-to-inner (L2 before L1D) so a refill between
++ * the two ops cannot repopulate L1 from a still-stale L2 line.
++ */
+ static void esp32p4_dma_cache_wback(phys_addr_t paddr, size_t size)
+ {
++	unsigned long flags;
++
++	local_irq_save(flags);
+ 	esp32p4_cache_writeback(ESP32P4_CACHE_MAP_L1D, (uint32_t)paddr, (uint32_t)size);
+ 	esp32p4_cache_writeback(ESP32P4_CACHE_MAP_L2,  (uint32_t)paddr, (uint32_t)size);
++	local_irq_restore(flags);
+ }
+ 
+ static void esp32p4_dma_cache_inv(phys_addr_t paddr, size_t size)
+ {
+-	esp32p4_cache_invalidate(ESP32P4_CACHE_MAP_L1D, (uint32_t)paddr, (uint32_t)size);
++	unsigned long flags;
++
++	local_irq_save(flags);
+ 	esp32p4_cache_invalidate(ESP32P4_CACHE_MAP_L2,  (uint32_t)paddr, (uint32_t)size);
++	esp32p4_cache_invalidate(ESP32P4_CACHE_MAP_L1D, (uint32_t)paddr, (uint32_t)size);
++	local_irq_restore(flags);
+ }
+ 
+ static void esp32p4_dma_cache_wback_inv(phys_addr_t paddr, size_t size)
+ {
++	unsigned long flags;
++
++	local_irq_save(flags);
+ 	esp32p4_cache_writeback(ESP32P4_CACHE_MAP_L1D, (uint32_t)paddr, (uint32_t)size);
+ 	esp32p4_cache_writeback(ESP32P4_CACHE_MAP_L2,  (uint32_t)paddr, (uint32_t)size);
+-	esp32p4_cache_invalidate(ESP32P4_CACHE_MAP_L1D, (uint32_t)paddr, (uint32_t)size);
+ 	esp32p4_cache_invalidate(ESP32P4_CACHE_MAP_L2,  (uint32_t)paddr, (uint32_t)size);
++	esp32p4_cache_invalidate(ESP32P4_CACHE_MAP_L1D, (uint32_t)paddr, (uint32_t)size);
++	local_irq_restore(flags);
+ }
+ 
+ static const struct riscv_nonstd_cache_ops esp32p4_cache_ops __initconst = {

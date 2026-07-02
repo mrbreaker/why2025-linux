@@ -1,0 +1,67 @@
+--- a/drivers/clocksource/timer-esp32p4-systimer.c
++++ b/drivers/clocksource/timer-esp32p4-systimer.c
+@@ -32,6 +32,7 @@
+ #define ST_UNIT0_VAL_LO  0x44   /* latched counter low 32 bits */
+ #define ST_COMP0_LOAD    0x50   /* write 1 to apply target_val[0] to comparator */
+ #define ST_INT_ENA       0x64   /* target0_int_ena[0] */
++#define ST_INT_RAW       0x68   /* target0_int_raw[0] (RO) */
+ #define ST_INT_CLR       0x6C   /* target0_int_clr[0] (WT) */
+ #define ST_INT_ST        0x70   /* target0_int_st[0] (RO) */
+ 
+@@ -66,15 +67,30 @@
+ 
+ static u64 notrace esp32p4_systimer_read64(void)
+ {
+-	u32 hi, lo;
++	u32 hi, hi2, lo;
+ 
+ 	/* Trigger latch of unit 0 counter */
+ 	writel(ST_UNIT0_OP_UPDATE, st_base + ST_UNIT0_OP);
+ 	/* Wait for the captured value to be valid (typically 2-3 cycles) */
+ 	while (!(readl(st_base + ST_UNIT0_OP) & ST_UNIT0_OP_VALID))
+ 		;
+-	hi = readl(st_base + ST_UNIT0_VAL_HI) & 0xFFFFF;
+-	lo = readl(st_base + ST_UNIT0_VAL_LO);
++	/*
++	 * The unit-0 latch registers are shared with every other reader
++	 * (sched_clock and the clockevent reprogram path both come
++	 * through here, get_cycles() in asm/timex.h latches the same
++	 * unit). An interrupt landing between the HI and LO reads can
++	 * re-latch a newer value; if the low word wrapped in between
++	 * (once per 2^32 ticks ~ 268 s) the stale HI pairs with a fresh
++	 * LO and the composed value is ~2^32 ticks off -- timekeeping
++	 * masks that into a huge forward jump. HI advances only once per
++	 * ~268 s, so re-reading HI and retrying on mismatch is a
++	 * sufficient lock-free consistency check.
++	 */
++	do {
++		hi = readl(st_base + ST_UNIT0_VAL_HI) & 0xFFFFF;
++		lo = readl(st_base + ST_UNIT0_VAL_LO);
++		hi2 = readl(st_base + ST_UNIT0_VAL_HI) & 0xFFFFF;
++	} while (hi != hi2);
+ 
+ 	return ((u64)hi << 32) | lo;
+ }
+@@ -126,6 +142,22 @@
+ 	writel(readl(st_base + ST_INT_ENA) | BIT(0), st_base + ST_INT_ENA);
+ 	writel(readl(st_base + ST_CONF) | ST_CONF_TARGET0_EN, st_base + ST_CONF);
+ 
++	/*
++	 * Verify the target is still ahead of the counter now that the
++	 * comparator is armed. This path runs from PSRAM and can be
++	 * fully cache-cold (an exec-time icache flush may just have
++	 * emptied the hierarchy); if reprogramming took longer than
++	 * delta, the target-mode comparator is armed behind the counter
++	 * and will not fire for ~2^52 ticks. With the periodic tick
++	 * emulation re-armed only from inside the tick ISR, and every
++	 * configured watchdog fed by that same tick, a single missed
++	 * alarm is permanent, silent tick death. Returning -ETIME lets
++	 * the clockevents core retry with a larger delta instead.
++	 */
++	if ((s64)(target - esp32p4_systimer_read64()) <= 0 &&
++	    !(readl(st_base + ST_INT_RAW) & BIT(0)))
++		return -ETIME;
++
+ 	return 0;
+ }
+ 

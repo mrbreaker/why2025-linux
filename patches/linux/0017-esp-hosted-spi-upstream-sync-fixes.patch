@@ -1,0 +1,95 @@
+--- a/drivers/net/wireless/espressif/esp_hosted/spi/esp_spi.c
++++ b/drivers/net/wireless/espressif/esp_hosted/spi/esp_spi.c
+@@ -168,6 +168,15 @@
+ 		return -EBUSY;
+ 	}
+ 
++	/*
++	 * Count every enqueued skb (upstream ng-1.0.6 behaviour): the
++	 * dequeue side in esp_spi_work decrements for ANY priority, so a
++	 * LOW-only increment lets heavy command/HCI traffic drain the
++	 * counter below the real queue depth and defeat the
++	 * TX_MAX_PENDING_COUNT cap.
++	 */
++	atomic_inc(&tx_pending);
++
+ 	/* Enqueue SKB in tx_q */
+ 	if (payload_header->if_type == ESP_INTERNAL_IF) {
+ 		skb_queue_tail(&spi_context.tx_q[PRIO_Q_HIGH], skb);
+@@ -175,7 +184,6 @@
+ 		skb_queue_tail(&spi_context.tx_q[PRIO_Q_MID], skb);
+ 	} else {
+ 		skb_queue_tail(&spi_context.tx_q[PRIO_Q_LOW], skb);
+-		atomic_inc(&tx_pending);
+ 	}
+ 
+ 	if (spi_context.spi_workqueue)
+@@ -220,6 +228,14 @@
+ 	for (prio_q_idx = 0; prio_q_idx < MAX_PRIORITY_QUEUES; prio_q_idx++) {
+ 		skb_queue_purge(&spi_context.tx_q[prio_q_idx]);
+ 	}
++
++	/*
++	 * The purge above discarded the counted skbs; reset the counter
++	 * with them (upstream ng-1.0.6 parity) or a C6 reboot with a full
++	 * queue leaves tx_pending stuck near the cap and write_packet
++	 * keeps pausing/dropping until ~100 unrelated dequeues drain it.
++	 */
++	atomic_set(&tx_pending, 0);
+ 
+ 	for (iface_idx = 0; iface_idx < ESP_MAX_INTERFACE; iface_idx++) {
+ 		struct esp_wifi_device *priv = adapter->priv[iface_idx];
+@@ -348,16 +364,44 @@
+ 			/* Configure TX buffer if available */
+ 
+ 			if (tx_skb) {
++				/*
++				 * Upstream ng-1.0.6 fix ("Fixed OOB reads in
++				 * SPI when TX skb length < SPI_BUF_SIZE"):
++				 * data/HCI skbs are allocated at their exact
++				 * payload length, but the transfer below
++				 * always clocks out SPI_BUF_SIZE bytes.
++				 * Without padding, up to ~1.5 KB of
++				 * neighbouring kernel heap leaks to the slave
++				 * on every small packet.
++				 */
++				if (tx_skb->len < SPI_BUF_SIZE &&
++				    skb_put_padto(tx_skb, SPI_BUF_SIZE)) {
++					/* skb_put_padto frees the skb on error */
++					esp_err("Failed to pad TX buffer to SPI size\n");
++					mutex_unlock(&spi_lock);
++					return;
++				}
+ 				trans.tx_buf = tx_skb->data;
+ 				esp_hex_dump_verbose("tx: ", trans.tx_buf, 32);
+ 			} else {
+ 				tx_skb = esp_if_alloc_skb(spi_context.adapter, SPI_BUF_SIZE);
++				if (!tx_skb) {
++					esp_err("Failed to alloc dummy SPI TX skb\n");
++					mutex_unlock(&spi_lock);
++					return;
++				}
+ 				trans.tx_buf = skb_put(tx_skb, SPI_BUF_SIZE);
+ 				memset((void *)trans.tx_buf, 0, SPI_BUF_SIZE);
+ 			}
+ 
+ 			/* Configure RX buffer */
+ 			rx_skb = esp_if_alloc_skb(spi_context.adapter, SPI_BUF_SIZE);
++			if (!rx_skb) {
++				esp_err("Failed to alloc SPI RX skb\n");
++				dev_kfree_skb(tx_skb);
++				mutex_unlock(&spi_lock);
++				return;
++			}
+ 			rx_buf = skb_put(rx_skb, SPI_BUF_SIZE);
+ 
+ 			memset(rx_buf, 0, SPI_BUF_SIZE);
+@@ -642,6 +686,8 @@
+ 		skb_queue_purge(&spi_context.rx_q[prio_q_idx]);
+ 	}
+ 
++	atomic_set(&tx_pending, 0);	/* upstream ng-1.0.6 parity */
++
+ 	if (spi_context.spi_workqueue) {
+ 		flush_workqueue(spi_context.spi_workqueue);
+ 		destroy_workqueue(spi_context.spi_workqueue);

@@ -4,6 +4,15 @@ This is the plan for closing out the silent runtime wedge described
 in [`KNOWN-ISSUES.md`](KNOWN-ISSUES.md). Steps are listed in
 ascending order of cost; each one independently moves the needle.
 
+> **Update 2026-07:** step 2's code audit is done and produced three
+> shipped candidate fixes — patches 0014 (signal-path `mcause`
+> poisoning via the still-live `regs->cause = -1UL` site), 0015 (ROM
+> cache-thunk IRQ exclusion + no more whole-L2 invalidate per exec),
+> and 0016 (systimer `-ETIME` on missed oneshot arm + torn-read fix).
+> See KNOWN-ISSUES "Candidate fixes shipped". **Run the reproducer
+> against a build with these before investing in steps 3-6.** They are
+> not yet built or hardware-verified.
+
 ## 1. Remove `idle=poll` from cmdline (cheap, ~5 min)
 
 The current cmdline forces the CPU to spin in `cpu_idle_loop()`

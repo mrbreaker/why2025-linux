@@ -1,0 +1,44 @@
+--- a/arch/riscv/kernel/signal.c
++++ b/arch/riscv/kernel/signal.c
+@@ -261,11 +261,11 @@
+ 	 * address and refetch, silently wedging the CPU in an invisible
+ 	 * trap-refetch loop (timer IRQs can't preempt it).
+ 	 *
+-	 * On P4 the syscall-restart check is a no-op regardless: the
+-	 * ecall_m->do_trap_ecall_u redirect in entry.S leaves
+-	 * pt_regs->cause at 0xB, not EXC_SYSCALL (8), so the downstream
+-	 * compare is already false. Clearing cause to 0 is therefore
+-	 * semantically equivalent and avoids the MINHV footgun.
++	 * The suppression itself is still required on P4: the entry.S
++	 * ecall_m redirect substitutes EXC_SYSCALL (8) into PT_CAUSE
++	 * precisely so the generic restart logic works, so the downstream
++	 * compare in arch_do_signal_or_restart() WOULD match here.
++	 * Clearing cause to 0 keeps it false without the MINHV footgun.
+ 	 */
+ 	regs->cause = 0;
+ #else
+@@ -428,7 +428,24 @@
+ 		retval = regs->a0;
+ 
+ 		/* Avoid additional syscall restarting via ret_from_exception */
++#ifdef CONFIG_SOC_ESP32P4
++		/*
++		 * Same MINHV/INT footgun as rt_sigreturn above: the CLIC v0.9
++		 * exit shim in entry.S writes pt_regs->cause back into mcause
++		 * before mret, and -1UL survives the shim mask as INT=1 plus
++		 * a reserved exccode -- an encoding this core has wedged on
++		 * before (invisible trap-refetch loop, timer IRQs blocked).
++		 *
++		 * This path is hot: it runs for every pending signal taken
++		 * during a syscall, including the default-ignored SIGCHLD
++		 * queued at each child exit -- i.e. once per iteration of any
++		 * fork+exec loop. Use 0, which makes the EXC_SYSCALL compare
++		 * false just as well.
++		 */
++		regs->cause = 0;
++#else
+ 		regs->cause = -1UL;
++#endif
+ 
+ 		/*
+ 		 * Prepare for system call restart. We do this here so that a

@@ -46,6 +46,42 @@ No Oops because the trap-handler / printk path also dies. Cannot
 diagnose further without JTAG / SWD or a non-printk dead-mans-switch.
 See `docs/RUNTIME-WEDGE.md` for the planned next steps.
 
+### Candidate fixes shipped (2026-07, NOT yet built or hardware-verified)
+
+A code audit found three independent mechanisms that all match the
+wedge's phenomenology (scales with fork+exec rate, silent, timer IRQ
+stops). Each now has a hardening patch; none has been proven to be THE
+cause — the `/bin/true` reproducer decides:
+
+- **Patch 0014 — signal-path mcause poisoning.** Upstream
+  `arch_do_signal_or_restart()` writes `regs->cause = -1UL` for every
+  pending signal taken during a syscall. Because entry.S substitutes
+  `EXC_SYSCALL` (8) into `PT_CAUSE`, that site is live (only
+  `rt_sigreturn` had been fixed), and `-1UL` survives the exit shim as
+  `mcause = INT=1 + reserved exccode` on `mret` — the same encoding
+  family behind two previous invisible-trap-loop wedges. The
+  default-ignored SIGCHLD queued at every child exit hits this path
+  once per fork+exec iteration, matching the reproducer's rate scaling
+  exactly.
+- **Patch 0015 — exec-time cache-flush hazards.** ROM cache thunks ran
+  with no IRQ exclusion (the ROM sync engine is non-reentrant; a
+  DMA-sync from IRQ context could clobber an in-flight op), and every
+  exec did a whole-L2 invalidate whose writeback→invalidate window
+  destroyed any concurrently dirtied line — silent kernel-memory
+  corruption proportional to exec rate.
+- **Patch 0016 — one lost oneshot alarm kills the tick forever.**
+  `set_next_event` never checked target-in-past; with HZ_PERIODIC the
+  tick only re-arms from inside the tick ISR, and every configured
+  watchdog (SOFTLOCKUP, HUNG_TASK, WQ_WATCHDOG) is tick-fed — which is
+  precisely why the wedge produces no detector output.
+
+Verification: rebuild, then `(while :; do /bin/true; done) &` (plus
+`tools/greptest.py` for the slower classes). If the wedge persists,
+rerun with each patch individually reverted to isolate. Also worth
+adding to the matrix: a pure-syscall no-exec loop (busybox shell
+`while :; do :; done`) — if that still wedges, all exec/mm paths are
+exonerated in one experiment.
+
 ### Workaround for shipping
 - Don't run sustained fork+exec loops. Real-user workloads (occasional
   shell commands, sensorpanel idle, wifi-connect) are safe.
