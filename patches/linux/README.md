@@ -31,10 +31,13 @@ new work lands as additional topic patches on top (0013+).
 
   - `kernel.config` — canonical Linux 6.18.35 config. Notable knobs:
     `KALLSYMS=n` (kernel partition is 6.5 MB, KALLSYMS+ALL overflows it),
-    `DETECT_HUNG_TASK=y` (30 s timeout), `MAGIC_SYSRQ=y` (incl.
-    `MAGIC_SYSRQ_SERIAL`), `WQ_WATCHDOG=y`, `DYNAMIC_DEBUG=y`,
-    `INITRAMFS_SOURCE=` (squashfs root), `CMDLINE_FORCE=y` with
-    `idle=poll`.
+    `DETECT_HUNG_TASK=y` (30 s timeout), `SOFTLOCKUP_DETECTOR=y` +
+    `STACKTRACE=y` (give the silent-wedge investigation a timer-driven
+    watchdog and unwindable backtraces — see `docs/KNOWN-ISSUES.md`),
+    `MAGIC_SYSRQ=y` (incl. `MAGIC_SYSRQ_SERIAL`), `WQ_WATCHDOG=y`,
+    `DYNAMIC_DEBUG=y`, `EXT4_FS=n` (root is squashfs, microSD is
+    VFAT-only — reclaims partition budget), `INITRAMFS_SOURCE=`
+    (squashfs root), `CMDLINE_FORCE=y` with `idle=poll`.
 
 The Buildroot defconfig lives at `../../configs/why2025_defconfig`.
 

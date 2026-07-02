@@ -5,7 +5,7 @@
 +dtb-$(CONFIG_SOC_ESP32P4) += esp32p4-why2025.dtb
 --- /dev/null	2026-05-03 14:38:22.219445125 +0200
 +++ b/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts	2026-05-07 08:06:35.431013838 +0200
-@@ -0,0 +1,747 @@
+@@ -0,0 +1,753 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WHY2025 hacker badge — Espressif ESP32-P4 HP core
@@ -94,6 +94,12 @@
 +		 * #interrupt-cells = 3: <clic_slot intmtx_source trigger>
 +		 *   intmtx_source 0 means no routing (local interrupts).
 +		 *   trigger is IRQ_TYPE_LEVEL_HIGH or IRQ_TYPE_EDGE_RISING.
++		 *
++		 * clic0 has no interrupts-extended link to CPU0_intc: the
++		 * CLIC<->hart wiring is set up in-driver (IRQCHIP_DECLARE +
++		 * the riscv_intc handler reads the active slot from mcause),
++		 * not via a DT interrupt-parent chain, so the CPU0_intc node
++		 * above has no DT consumers here by design.
 +		 */
 +		clic0: interrupt-controller@20801000 {
 +			compatible = "espressif,esp32p4-clic";

@@ -47,6 +47,9 @@ Linux runs on **one** HP core in M-mode, NOMMU. The second HP core is unused.
   - **TI TCA8418** I²C keypad scanner at addr `0x34`.
   - SDA = P4 GPIO 18, SCL = P4 GPIO 20 (bit-banged i2c-gpio bus 0).
   - INT line is **not routed** to the P4 — driver polls every 50 ms.
+  - Fast press+release inside one 50 ms poll window is not dropped: both
+    events queue in the chip's 10-entry hardware key FIFO and are drained
+    together on the next tick. Worst-case added key latency is ~50 ms.
   - 8 rows × 10 cols matrix. PS-symbol keys (square/triangle/cross/circle/
     cloud/diamond) currently mapped to F1..F6 — see DTS for full keymap.
 
