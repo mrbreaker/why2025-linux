@@ -1,0 +1,22 @@
+--- a/drivers/net/wireless/espressif/esp_hosted/spi/esp_spi.c
++++ b/drivers/net/wireless/espressif/esp_hosted/spi/esp_spi.c
+@@ -531,6 +531,19 @@
+ 
+ 	open_data_path();
+ 
++	/*
++	 * Both IRQs are rising-edge only, so a slave that asserted
++	 * HANDSHAKE/DATA_READY before request_irq() above (the C6 is
++	 * released from reset by the boot shim and the c6-kick driver,
++	 * long before this probe) never produces an edge -- its queued
++	 * bootup event would sit unread and Wi-Fi would stay dead for
++	 * the whole boot. Upstream avoids this by pulsing its resetpin
++	 * AFTER the IRQs are armed; this port dropped that ordering, so
++	 * kick the work once: it reads the GPIO *levels* and is a no-op
++	 * when neither line is asserted.
++	 */
++	queue_work(spi_context.spi_workqueue, &spi_context.spi_work);
++
+ 	return 0;
+ }
+ 
