@@ -15,7 +15,9 @@
 
 # Startup the system
 ::sysinit:/bin/mount -t proc proc /proc
-::sysinit:/bin/mount -o remount,rw /
+# No remount-rw: the root is a read-only squashfs on mtd-rom; the remount
+# fails every boot and burns one 512 KB FLAT fork+exec in the early-boot
+# window where deferred probes are still settling.
 ::sysinit:/bin/mkdir -p /dev/pts /dev/shm
 ::sysinit:/bin/mount -a
 ::sysinit:/bin/mkdir -p /run/lock/subsys
