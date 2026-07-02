@@ -17,6 +17,7 @@
 
 CONF=/tmp/wpa_supplicant.conf
 IFACE=wlan0
+PIDFILE=/tmp/wpa_supplicant.$IFACE.pid
 
 SSID="${1:-}"
 PSK="${2:-}"
@@ -32,6 +33,15 @@ if [ -z "$PSK" ]; then
     stty echo
     printf '\n'
 fi
+
+# wpa_supplicant.conf quotes ssid/psk as "..."; a literal " or \ in either
+# would break out of the quoting and inject config directives. This tool
+# has no fork-free escaping path (hush), so reject them outright.
+case "$SSID$PSK" in
+    *'"'*|*'\'*)
+        printf '[wifi] SSID/PSK must not contain a double-quote or backslash\n' >&2
+        exit 1 ;;
+esac
 
 dump_buddy() {
     printf '[wifi] %s — buddyinfo / mem free:\n' "$1"
@@ -69,7 +79,15 @@ printf '[wifi] ip link set up rc=%d\n' "$rc"
 [ "$rc" -eq 0 ] || { printf '[wifi] FAILED ip link set up\n'; exit 1; }
 
 dump_buddy 'pre-wpa'
-wpa_supplicant -B -i "$IFACE" -D nl80211 -c "$CONF"
+# A wpa_supplicant left running by a previous (perhaps failed) call would
+# leak a ~1 MB FLAT allocation pinned on the buddy heap. Kill any stale
+# instance (pid read via builtin, no fork) before starting a fresh one.
+if [ -f "$PIDFILE" ]; then
+    read -r oldpid < "$PIDFILE"
+    [ -n "$oldpid" ] && kill "$oldpid" 2>/dev/null
+    rm -f "$PIDFILE"
+fi
+wpa_supplicant -B -P "$PIDFILE" -i "$IFACE" -D nl80211 -c "$CONF"
 rc=$?
 printf '[wifi] wpa_supplicant -B rc=%d\n' "$rc"
 [ "$rc" -eq 0 ] || { printf '[wifi] FAILED wpa_supplicant\n'; exit 1; }
@@ -90,6 +108,18 @@ while [ $i -lt 16 ]; do
     i=$((i+1))
 done
 printf '[wifi] operstate after %ds: %s\n' "$i" "$state"
+
+# Don't fork udhcpc if association never completed: kill the still-running
+# wpa_supplicant so it doesn't leak, and fail with a clear message instead
+# of burning a 30 s udhcpc timeout on a link that will never come up.
+if [ "$state" != "up" ]; then
+    printf '[wifi] %s never associated (operstate=%s); aborting\n' "$IFACE" "$state" >&2
+    if [ -f "$PIDFILE" ]; then
+        read -r pid < "$PIDFILE"
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null
+    fi
+    exit 1
+fi
 
 dump_buddy 'pre-udhcpc'
 printf '[wifi] requesting DHCP lease...\n'

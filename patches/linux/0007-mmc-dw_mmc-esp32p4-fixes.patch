@@ -9,8 +9,8 @@
 +	 * that selects which physical slot the command targets. Mainline
 +	 * dw_mmc was multi-slot historically but the loop was removed and
 +	 * slot->id is hardcoded to 0; we read it from DT (`snps,slot-id`)
-+	 * to support boards that wire their card on slot 1 (e.g. ESP32-P4
-+	 * badge with the C6 on slot-1 GPIO matrix).
++	 * to restore support for boards that wire their card on a non-zero
++	 * physical slot. (The WHY2025 badge's own microSD is on slot 0.)
 +	 */
 +	cmd |= slot->id << 16;
 +
@@ -82,8 +82,8 @@
 +	/*
 +	 * Allow boards that wire their card on a non-zero physical slot
 +	 * to opt in via DT (`snps,slot-id`). Default 0 preserves mainline
-+	 * behavior. Used by ESP32-P4 (badge wires C6 on slot 1; slot 0 is
-+	 * IOMUX-only and not connected on this PCB).
++	 * behavior — the WHY2025 badge uses slot 0 for its microSD and
++	 * doesn't set this, so it's generic plumbing here, not badge-specific.
 +	 */
 +	of_property_read_u32(host->dev->of_node, "snps,slot-id", &slot->id);
  	slot->sdio_id = host->sdio_id0 + slot->id;

@@ -6,8 +6,8 @@
  /*
 + * Polling fallback for boards that don't wire the TCA8418 NOT pin.
 + * The KEY FIFO is the same ground truth; we just drain it on a timer
-+ * instead of an interrupt. INT_STAT housekeeping is unnecessary when
-+ * no host IRQ line exists, so this is strictly read-keypad on tick.
++ * instead of an interrupt. tca8418_read_keypad() still clears INT_STAT
++ * at the end of each drain — harmless here, just unused without an IRQ.
 + */
 +static void tca8418_poll(struct input_dev *input)
 +{

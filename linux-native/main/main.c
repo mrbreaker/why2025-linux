@@ -20,55 +20,8 @@ static const char *TAG = "boot";
 #define KERNEL_LOAD_PA  0x48000000u
 #define DTB_LOAD_PA     0x48800000u
 
-/*
- * 0 — embedded stub (fast, no flash read, for bring-up)
- * 1 — load kernel + DTB from flash via esp_partition_mmap
- */
-#define LOAD_FROM_FLASH  1
-
 /* RISC-V flat Image header magic ("RISCV\0\0\0") at byte offset 48, little-endian u64. */
 #define RISCV_IMAGE_MAGIC  0x5643534952ULL
-
-#if !LOAD_FROM_FLASH
-/*
- * Stub binary embedded directly — generated from stub/stub.bin via xxd -i.
- * Linked at 0x48000000; entry is byte 0.
- */
-static const uint8_t kernel_stub[] = {
-    0x17, 0x11, 0x00, 0x00, 0x13, 0x01, 0x01, 0x18, 0x2a, 0x84, 0xae, 0x84,
-    0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0x45, 0x0f, 0xb1, 0x28, 0x17, 0x05,
-    0x00, 0x00, 0x13, 0x05, 0xc5, 0x11, 0x89, 0x28, 0x22, 0x85, 0x4d, 0x20,
-    0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0x45, 0x15, 0x91, 0x20, 0x17, 0x05,
-    0x00, 0x00, 0x13, 0x05, 0x05, 0x11, 0x2d, 0x28, 0x26, 0x85, 0x69, 0x20,
-    0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0xc5, 0x13, 0x35, 0x20, 0x17, 0x05,
-    0x00, 0x00, 0x13, 0x05, 0x45, 0x10, 0x0d, 0x20, 0x17, 0x05, 0x00, 0x00,
-    0x85, 0x28, 0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0x25, 0x12, 0x09, 0x28,
-    0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0x65, 0x0f, 0x21, 0x20, 0x73, 0x00,
-    0x50, 0x10, 0xf5, 0xbf, 0x2a, 0x8e, 0x03, 0x05, 0x0e, 0x00, 0x05, 0xc5,
-    0xb7, 0xa2, 0x0c, 0x50, 0xf1, 0x02, 0x03, 0xa3, 0x02, 0x00, 0x13, 0x53,
-    0x03, 0x01, 0x13, 0x73, 0xf3, 0x0f, 0x93, 0x03, 0xf0, 0x07, 0xe3, 0x58,
-    0x73, 0xfe, 0xb7, 0xa2, 0x0c, 0x50, 0x23, 0xa0, 0xa2, 0x00, 0x05, 0x0e,
-    0xd9, 0xbf, 0x82, 0x80, 0xb7, 0xa2, 0x0c, 0x50, 0xf1, 0x02, 0x03, 0xa3,
-    0x02, 0x00, 0x13, 0x53, 0x03, 0x01, 0x13, 0x73, 0xf3, 0x0f, 0x93, 0x03,
-    0xf0, 0x07, 0xe3, 0x58, 0x73, 0xfe, 0xb7, 0xa2, 0x0c, 0x50, 0x23, 0xa0,
-    0xa2, 0x00, 0x82, 0x80, 0x41, 0x11, 0x06, 0xc6, 0x4a, 0xc4, 0x2a, 0x89,
-    0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0xf5, 0x0a, 0x71, 0x3f, 0xf1, 0x4f,
-    0x4a, 0x85, 0x33, 0x55, 0xf5, 0x01, 0x3d, 0x89, 0xa9, 0x42, 0x63, 0x45,
-    0x55, 0x00, 0x13, 0x05, 0x75, 0x05, 0x19, 0xa0, 0x13, 0x05, 0x05, 0x03,
-    0x45, 0x3f, 0xf1, 0x1f, 0xe3, 0xd2, 0x0f, 0xfe, 0xb2, 0x40, 0x22, 0x49,
-    0x41, 0x01, 0x82, 0x80, 0x0d, 0x0a, 0x0a, 0x2a, 0x2a, 0x2a, 0x20, 0x4e,
-    0x61, 0x74, 0x69, 0x76, 0x65, 0x20, 0x52, 0x56, 0x33, 0x32, 0x20, 0x73,
-    0x74, 0x75, 0x62, 0x20, 0x72, 0x75, 0x6e, 0x6e, 0x69, 0x6e, 0x67, 0x20,
-    0x6f, 0x6e, 0x20, 0x45, 0x53, 0x50, 0x33, 0x32, 0x2d, 0x50, 0x34, 0x20,
-    0x2a, 0x2a, 0x2a, 0x0d, 0x0a, 0x00, 0x20, 0x20, 0x68, 0x61, 0x72, 0x74,
-    0x69, 0x64, 0x20, 0x3d, 0x20, 0x00, 0x20, 0x20, 0x64, 0x74, 0x62, 0x5f,
-    0x70, 0x61, 0x20, 0x3d, 0x20, 0x00, 0x20, 0x20, 0x70, 0x63, 0x20, 0x20,
-    0x20, 0x20, 0x20, 0x3d, 0x20, 0x00, 0x42, 0x6f, 0x6f, 0x74, 0x20, 0x63,
-    0x68, 0x61, 0x69, 0x6e, 0x20, 0x4f, 0x4b, 0x20, 0x2d, 0x2d, 0x20, 0x6c,
-    0x6f, 0x6f, 0x70, 0x69, 0x6e, 0x67, 0x20, 0x69, 0x6e, 0x20, 0x57, 0x46,
-    0x49, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x00, 0x30, 0x78, 0x00
-};
-#endif /* !LOAD_FROM_FLASH */
 
 /* ------------------------------------------------------------------ */
 /*
@@ -128,7 +81,6 @@ static void IRAM_ATTR do_boot(uint32_t entry, uint32_t dtb_pa)
     __builtin_unreachable();
 }
 
-#if LOAD_FROM_FLASH
 /* ------------------------------------------------------------------ */
 /*
  * Copy `size` bytes from the start of `part` (at partition-relative
@@ -176,7 +128,9 @@ static esp_err_t load_partition_mmap(const esp_partition_t *part,
 /*
  * Map the first page of the kernel partition, check the RISC-V Image
  * magic, and return the actual kernel size from the header.
- * Returns 0 on error; returns part->size if magic not found (loads all).
+ * Returns 0 if the header can't be mapped or the Image magic is absent
+ * (the caller treats 0 as fatal and restarts, rather than jumping into
+ * non-kernel flash contents).
  */
 static uint32_t probe_kernel_size(const esp_partition_t *part)
 {
@@ -194,9 +148,9 @@ static uint32_t probe_kernel_size(const esp_partition_t *part)
 
     uint32_t size = 0;
     if (magic != RISCV_IMAGE_MAGIC) {
-        ESP_LOGW(TAG, "No Image magic (0x%016llx) — loading first 64 KB",
+        ESP_LOGE(TAG, "No RISC-V Image magic (got 0x%016llx) — kernel partition is not a flat Image",
                  (unsigned long long)magic);
-        size = 64u * 1024u;
+        size = 0;   /* fatal: app_main restarts rather than jump into garbage */
     } else {
         uint64_t image_size;
         memcpy(&image_size, (const uint8_t *)mapped + 16, sizeof(image_size));
@@ -214,7 +168,6 @@ static uint32_t probe_kernel_size(const esp_partition_t *part)
     esp_partition_munmap(h);
     return size;
 }
-#endif /* LOAD_FROM_FLASH */
 
 /* ------------------------------------------------------------------ */
 /*
@@ -393,7 +346,6 @@ void app_main(void)
     boot_shim_kick_c6();
     boot_shim_init_sdmmc();
 
-#if LOAD_FROM_FLASH
     ESP_LOGI(TAG, "=== ESP32-P4 native boot shim (flash mode) ===");
 
     const esp_partition_t *kern_part = esp_partition_find_first(
@@ -462,6 +414,8 @@ void app_main(void)
 
     const void *rootfs_va;
     esp_partition_mmap_handle_t rootfs_h;
+    /* Deliberately never munmap'd: Linux reads the rootfs through this VA
+     * after the jump (see the block comment above and the note below). */
     esp_err_t err = esp_partition_mmap(rootfs_part, 0, rootfs_part->size,
                                        ESP_PARTITION_MMAP_DATA,
                                        &rootfs_va, &rootfs_h);
@@ -479,13 +433,6 @@ void app_main(void)
         if (p[0] != 'h' || p[1] != 's' || p[2] != 'q' || p[3] != 's') {
             ESP_LOGW(TAG, "rootfs partition does not start with squashfs magic");
         }
-        /*
-         * Probe four points across the partition to confirm the IDF
-         * MMU mapped the FULL range, not just the first batch of MMU
-         * entries.  Reading anywhere outside the mapped range traps,
-         * so this is also a "did the mapping cover the requested
-         * size" sanity check before jumping to Linux.
-         */
         /*
          * Two-tier prewalk:
          *  1. Coarse 64 KB stride across the whole partition warms the
@@ -516,33 +463,6 @@ void app_main(void)
         (void)prewarm;
         ESP_LOGI(TAG, "rootfs prewalk: %"PRIu32" KB coarse + last 64 KB fine",
                  rootfs_size / 1024);
-
-        /* Read 16 bytes at the squashfs ID-table offset (0x446a61 — see
-         * `xxd -s 0x58 -l 8 rootfs.squashfs`).  Linux fails to mount
-         * with "unable to read id index table" when these reads come
-         * back as garbage.  Print actual bytes here so we can compare
-         * with the on-disk file. */
-        const uint32_t check_offsets[] = {
-            0x446a61u,  /* id_table_start */
-            0x446a4fu,  /* lookup_table_start */
-            0x444ce8u,  /* inode_table_start */
-            0x44586cu,  /* directory_table_start */
-            0x4465c6u,  /* fragment_table_start */
-            0x446a69u,  /* bytes_used (file end) */
-        };
-        for (size_t i = 0; i < sizeof(check_offsets)/sizeof(check_offsets[0]); i++) {
-            uint32_t off = check_offsets[i];
-            if (off + 8 > rootfs_size) continue;
-            const uint8_t *q = p + off;
-            ESP_LOGI(TAG, "  squashfs +0x%06" PRIx32 ": %02x %02x %02x %02x %02x %02x %02x %02x",
-                     off, q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7]);
-        }
-        /* And read the last 8 bytes of the mapped region. */
-        const uint8_t *tail = p + rootfs_size - 8;
-        ESP_LOGI(TAG, "  end-8 (off 0x%06" PRIx32 "): %02x %02x %02x %02x %02x %02x %02x %02x",
-                 (uint32_t)(rootfs_size - 8),
-                 tail[0], tail[1], tail[2], tail[3],
-                 tail[4], tail[5], tail[6], tail[7]);
     }
 
     /* Patch the DTB in PSRAM. */
@@ -586,16 +506,6 @@ void app_main(void)
         }
     }
     /* INTENTIONALLY no munmap — Linux reads rootfs through this VA. */
-
-#else
-    ESP_LOGI(TAG, "=== ESP32-P4 native boot shim (stub mode) ===");
-    ESP_LOGI(TAG, "Copying %u-byte stub to PSRAM 0x%08x",
-             (unsigned)sizeof(kernel_stub), KERNEL_LOAD_PA);
-
-    uint8_t *dest = (uint8_t *)KERNEL_LOAD_PA;
-    memcpy(dest, kernel_stub, sizeof(kernel_stub));
-    cache_hal_writeback_addr(KERNEL_LOAD_PA, sizeof(kernel_stub));
-#endif
 
     ESP_LOGI(TAG, "Jumping to 0x%08x ...", KERNEL_LOAD_PA);
     vTaskDelay(pdMS_TO_TICKS(20));  /* let the log flush */

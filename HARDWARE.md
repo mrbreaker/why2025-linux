@@ -20,7 +20,7 @@ Linux runs on **one** HP core in M-mode, NOMMU. The second HP core is unused.
   - Connected to the P4 over GPSPI2 (mode 2, ~26 MHz) plus two control lines.
     Same physical pins originally wired for SDIO; routed through the GPIO
     matrix on both sides.
-  - C6 reset on P4 GPIO 13.
+  - C6 reset on P4 GPIO 12 (active-low); boot-mode strap on P4 GPIO 13.
 
 ## Pin map (P4 ↔ C6 over SPI)
 

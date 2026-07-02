@@ -134,15 +134,15 @@
 +};
 +/ {
 +	/*
-+	 * Reserved CMA region for the DRM framebuffer.
++	 * Reserved-memory regions carved from the 32 MB PSRAM window
++	 * (base 0x48000000, size 0x02000000 -> top 0x4A000000), below
++	 * whatever the kernel itself claims.
 +	 *
-+	 * 720 x 720 x 4 (XRGB8888) = 2,073,600 bytes. Round up to 4 MB to leave
-+	 * room for a back buffer + DMA descriptors + alignment slop. Placed
-+	 * near the top of the 32 MB PSRAM window (base 0x48000000, size
-+	 * 0x02000000 → top at 0x4A000000), below whatever the kernel claims.
-+	 *
-+	 * @TODO revisit once we know where the kernel+initramfs+vmlinux land.
-+	 * If we run out, drop to RGB565 (halves this to 2 MB).
++	 * The only child today is the NOMMU user-space mmap pool
++	 * (app_pool, below). The DRM framebuffer is NOT carved out here --
++	 * the display path scans out of the kernel's own pages, and the
++	 * old shared-dma-pool "display_cma" region that used to live here
++	 * was removed (CONFIG_CMA depends on MMU; see app_pool's comment).
 +	 */
 +	reserved-memory {
 +		#address-cells = <1>;
@@ -168,7 +168,7 @@
 +		 * the pool fall through to the buddy allocator, which
 +		 * caps at MAX_PAGE_ORDER=10 = 4 MB.
 +		 *
-+		 * Made possible by patch 0033 moving the rootfs out of
++		 * Made possible by moving the rootfs out of
 +		 * the kernel image into a squashfs partition mounted via
 +		 * mtd-rom — without that, a 10 MB carveout starves the
 +		 * early-init buddy heap during initramfs unpack.
