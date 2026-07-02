@@ -113,6 +113,17 @@ described next — a command can still be silently starved rather than
 clobbering another one. Needs a `tools/freezetest.py` run to confirm any
 change in frequency; not verified on hardware yet.
 
+**Second candidate fix shipped (2026-07, pending hardware verification):**
+patch 0018 adds value-level dedupe to pwm-esp-hosted-c6. The second
+probe-time apply (pwm-backlight's post-register
+`backlight_update_status`) computes exactly the C6 slave's boot duty
+(`BL_DISPLAY_INITIAL_DUTY` = 76 = DT `default-brightness-level`), so
+seeding a last-sent cache with 76 and eliding same-value writes removes
+*all* backlight SPI traffic from the deferred-probe race window — the
+only command this driver ever issued during the freeze window was that
+redundant one. Verify together with the 0014-0017 batch via
+`tools/freezetest.py` (~90 cycles for real confidence at a 1/30 rate).
+
 **Related, still-open follow-up — `esp_cmd_work()` busy-bail doesn't
 drain the queue:** when `adapter->cur_cmd` is already busy,
 `esp_cmd_work()` (patch 0008) just logs "Busy in another cmd execution"

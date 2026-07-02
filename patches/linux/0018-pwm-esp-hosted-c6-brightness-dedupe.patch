@@ -1,0 +1,64 @@
+--- a/drivers/pwm/pwm-esp-hosted-c6.c
++++ b/drivers/pwm/pwm-esp-hosted-c6.c
+@@ -37,9 +37,19 @@
+ 
+ #define ESP_C6_PWM_MAX_DUTY	255U
+ 
++/*
++ * Duty the C6 slave programs from its own boot path
++ * (BL_DISPLAY_INITIAL_DUTY in the c6-slave series, patch 0003). Must
++ * stay in sync with the slave firmware: it seeds the dedupe cache below
++ * so the probe-time re-apply of the very same value never touches the
++ * SPI command channel.
++ */
++#define ESP_C6_PWM_SLAVE_BOOT_DUTY	76U
++
+ struct esp_c6_pwm {
+ 	struct esp_adapter *adapter;
+ 	struct pwm_state cached;
++	u32 last_sent;
+ 	bool probe_apply_skipped;
+ };
+ 
+@@ -95,10 +105,33 @@
+ 		return 0;
+ 	}
+ 
++	/*
++	 * Value-level dedupe. The skip above only swallows the FIRST
++	 * probe-time apply (pwm_init_state's duty-0/disabled write);
++	 * pwm-backlight's post-register backlight_update_status() issues
++	 * a second apply in the same deferred-probe window, computing
++	 * exactly the slave's boot duty -- a redundant SPI command inside
++	 * the race window blamed for the residual ~1/30 boot freeze
++	 * (docs/KNOWN-ISSUES.md). Eliding same-value writes removes ALL
++	 * boot-window backlight traffic and is a harmless no-op for
++	 * runtime dimming.
++	 *
++	 * Caveat: if the C6 reboots mid-uptime it reverts to its boot
++	 * duty while last_sent still holds the host's value; the next
++	 * user write to that exact cached value is elided. Acceptable --
++	 * a C6 reboot already loses the host brightness, and any other
++	 * value resynchronizes.
++	 */
++	if (brightness == priv->last_sent) {
++		priv->cached = *state;
++		return 0;
++	}
++
+ 	ret = cmd_set_backlight(priv->adapter, (u8)brightness);
+ 	if (ret)
+ 		return ret;
+ 
++	priv->last_sent = brightness;
+ 	priv->cached = *state;
+ 	return 0;
+ }
+@@ -135,6 +168,7 @@
+ 
+ 	priv = pwmchip_get_drvdata(chip);
+ 	priv->adapter = adapter;
++	priv->last_sent = ESP_C6_PWM_SLAVE_BOOT_DUTY;
+ 
+ 	chip->ops = &esp_c6_pwm_ops;
+ 
