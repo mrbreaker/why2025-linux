@@ -198,7 +198,7 @@
  SYM_CODE_START(handle_exception)
  	/*
  	 * If coming from userspace, preserve the user thread pointer and load
-@@ -152,12 +155,50 @@
+@@ -152,12 +155,32 @@
  	csrr s3, CSR_TVAL
  	csrr s4, CSR_CAUSE
  	csrr s5, CSR_SCRATCH
@@ -228,28 +228,10 @@
  	REG_S s3, PT_BADADDR(sp)
  	REG_S s4, PT_CAUSE(sp)
  	REG_S s5, PT_TP(sp)
-+#ifdef CONFIG_SOC_ESP32P4
-+	/*
-+	 * ecall_m redirect fix-up: the excp_vect_table entry for exccode 11
-+	 * (ecall from M-mode) dispatches to do_trap_ecall_u on P4, but
-+	 * pt_regs->cause is left at 0xB. Generic code (notably the
-+	 * syscall-restart check in arch_do_signal_or_restart) compares
-+	 * pt_regs->cause against EXC_SYSCALL (=8), so ERESTARTSYS etc. are
-+	 * silently broken unless we rewrite the stored cause to 8.
-+	 *
-+	 * s4 is intentionally left intact so the dispatch below still
-+	 * indexes excp_vect_table at offset 11 and lands in do_trap_ecall_u.
-+	 */
-+	li   t0, 11			/* EXC_SYSCALL_M (ecall from M) */
-+	bne  s4, t0, 2f
-+	li   t0, 8			/* EXC_SYSCALL (U-mode ecall, upstream) */
-+	REG_S t0, PT_CAUSE(sp)
-+2:
-+#endif
  
  	/*
  	 * Set the scratch register to 0, so that if a recursive exception
-@@ -187,6 +228,36 @@
+@@ -187,6 +210,59 @@
  	call do_irq
  	j ret_from_exception
  1:
@@ -271,7 +253,30 @@
 +	li t0, 0x00FF0000
 +	not t0, t0
 +	and s4, s4, t0          /* clear mpil (bits 23:16), keep mpp/mpie */
++	/*
++	 * ecall_m redirect fix-up: the excp_vect_table entry for exccode 11
++	 * (ecall from M-mode) dispatches to do_trap_ecall_u on P4, but
++	 * generic code (arch_do_signal_or_restart's syscall-restart check)
++	 * compares pt_regs->cause against EXC_SYSCALL (=8), so ERESTARTSYS
++	 * etc. are silently broken unless the STORED cause reads 8. s4
++	 * itself must keep exception code 11 (mpp/mpie bits are irrelevant
++	 * to the vector-table index below, which only consults bits
++	 * [11:0]) so the lookup still lands on do_trap_ecall_u -- only the
++	 * value written to PT_CAUSE is substituted.
++	 */
++	li   t0, 0xfff
++	and  t0, s4, t0			/* NB: not "andi t0,s4,0xfff" -- andi's
++					 * 12-bit immediate is sign-extended,
++					 * so 0xfff sign-extends to -1 and the
++					 * mask becomes a no-op. */
++	li   t1, 11			/* EXC_SYSCALL_M (ecall from M) */
++	bne  t0, t1, 10f
++	li   t1, 8			/* EXC_SYSCALL (U-mode ecall, upstream) */
++	REG_S t1, PT_CAUSE(sp)
++	j    11f
++10:
 +	REG_S s4, PT_CAUSE(sp)
++11:
 +	/* local copy for indexing: clear everything except bits [11:0] */
 +	li t0, 0xfff
 +	and t1, s4, t0
@@ -286,7 +291,7 @@
  	/* Handle other exceptions */
  	slli t0, s4, RISCV_LGPTR
  	la t1, excp_vect_table
-@@ -212,6 +283,20 @@
+@@ -212,6 +288,20 @@
   */
  SYM_CODE_START_NOALIGN(ret_from_exception)
  	REG_L s0, PT_STATUS(sp)
@@ -307,7 +312,7 @@
  #ifdef CONFIG_RISCV_M_MODE
  	/* the MPP value is too large to be used as an immediate arg for addi */
  	li t0, SR_MPP
-@@ -219,6 +304,7 @@
+@@ -219,6 +309,7 @@
  #else
  	andi s0, s0, SR_SPP
  #endif
@@ -315,7 +320,7 @@
  	bnez s0, 1f
  
  #ifdef CONFIG_KSTACK_ERASE
-@@ -266,6 +352,48 @@
+@@ -266,6 +357,48 @@
  	csrw CSR_STATUS, a0
  	csrw CSR_EPC, a2
  
@@ -364,7 +369,7 @@
  	REG_L x1,  PT_RA(sp)
  	REG_L x3,  PT_GP(sp)
  	REG_L x4,  PT_TP(sp)
-@@ -454,7 +582,15 @@
+@@ -454,7 +587,15 @@
  	RISCV_PTR do_trap_ecall_u /* system call */
  	RISCV_PTR do_trap_ecall_s
  	RISCV_PTR do_trap_unknown

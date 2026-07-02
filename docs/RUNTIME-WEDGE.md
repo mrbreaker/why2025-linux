@@ -59,11 +59,21 @@ it — rebuild, and rerun the reproducer.
   - Wedge persists → the pool path is exonerated; suspect buddy /
     nommu core or a non-allocator cause.
   - Wedge disappears or changes timing → `mm/nommu_userspace_pool.c`
-    and the `do_mmap_private` hook are implicated. Note the known
-    audit gap: patch 0010 only intercepts frees at the
-    `__put_nommu_region` full-free site, so a partial unmap of a
-    pool-backed region could leak pool pages into the buddy
-    allocator.
+    and the `do_mmap_private` hook are implicated.
+
+**Fix shipped (pending hardware verification):** the audit gap noted here
+previously — patch 0010 only intercepting frees at the
+`__put_nommu_region` full-free site — turned out to be worse than a
+leak: `free_page_series()` on `memblock_reserve()`d pool memory is
+refcount/state corruption, not just lost pages. Patch 0010 now also
+guards `vmi_shrink_vma()` (partial unmap of an anonymous VMA — reachable
+from an ordinary userspace `munmap()` of a sub-range, not just
+binfmt_flat's whole-region unmaps) and `do_mmap_private()`'s
+`error_free:` path (failed `kernel_read()` on a private file mapping).
+Both were verified by fetching real upstream Linux 6.18.35 `mm/nommu.c`
+and `lib/genalloc.c` and round-trip-applying the new hunks with zero
+fuzz; `gen_pool`'s bitmap-based allocator was confirmed to support a
+partial free of a sub-range safely. Not yet verified on hardware.
 
 ## 5. `CONFIG_PROVE_LOCKING=y` (1 hr)
 

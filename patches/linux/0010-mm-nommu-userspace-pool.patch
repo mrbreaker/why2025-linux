@@ -55,32 +55,10 @@
 +#endif /* _LINUX_NOMMU_USERSPACE_POOL_H */
 --- a/mm/Kconfig	2026-04-30 11:13:53.000000000 +0200
 +++ b/mm/Kconfig	2026-05-05 11:14:25.133721780 +0200
-@@ -761,6 +761,50 @@
+@@ -761,6 +761,28 @@
  	depends on MEMORY_FAILURE && DEBUG_KERNEL && PROC_FS
  	select PROC_PAGE_MONITOR
  
-+config NOMMU_USERSPACE_POOL
-+	bool "Reserved-memory pool for large NOMMU user mmap allocations"
-+	depends on !MMU && OF_RESERVED_MEM
-+	select GENERIC_ALLOCATOR
-+	help
-+	  On NOMMU systems every private user mmap (fork+exec of a
-+	  binfmt_flat binary, anonymous malloc, brk-grown heap) is satisfied
-+	  by ONE physically contiguous page range from the buddy allocator.
-+	  Small NOMMU machines fragment the buddy heap quickly, leaving
-+	  several megabytes of free memory but no free blocks of the order
-+	  needed to fork a non-trivial process or to malloc more than a few
-+	  hundred kilobytes. CONFIG_CMA — the usual answer — depends on MMU.
-+
-+	  Saying Y here lets a platform device tree describe a reserved
-+	  memory region (compatible "linux,nommu-userspace-pool") that the
-+	  NOMMU mmap path will draw large user allocations from before
-+	  falling back to the buddy allocator.
-+
-+	  When this option is enabled but no DT node is present, the hook
-+	  is a no-op and the buddy fallback is used unconditionally.
-+	  If unsure, say N.
-+
 +config NOMMU_USERSPACE_POOL
 +	bool "Reserved-memory pool for large NOMMU user mmap allocations"
 +	depends on !MMU && OF_RESERVED_MEM
@@ -108,11 +86,10 @@
  	depends on !MMU
 --- a/mm/Makefile	2026-04-30 11:13:53.000000000 +0200
 +++ b/mm/Makefile	2026-05-05 11:14:25.133839822 +0200
-@@ -146,3 +146,5 @@
+@@ -146,3 +146,4 @@
  obj-$(CONFIG_EXECMEM) += execmem.o
  obj-$(CONFIG_TMPFS_QUOTA) += shmem_quota.o
  obj-$(CONFIG_PT_RECLAIM) += pt_reclaim.o
-+obj-$(CONFIG_NOMMU_USERSPACE_POOL) += nommu_userspace_pool.o
 +obj-$(CONFIG_NOMMU_USERSPACE_POOL) += nommu_userspace_pool.o
 --- a/mm/nommu.c	2026-04-30 11:13:53.000000000 +0200
 +++ b/mm/nommu.c	2026-05-05 11:14:25.133958281 +0200
@@ -166,6 +143,37 @@
 +	}
  	if (!base)
  		goto enomem;
+ 
+@@ -993,7 +1017,11 @@
+ 	return 0;
+ 
+ error_free:
+-	free_page_series(region->vm_start, region->vm_top);
++	if (region->vm_from_pool)
++		nommu_userspace_pool_free((void *)region->vm_start,
++					  region->vm_top - region->vm_start);
++	else
++		free_page_series(region->vm_start, region->vm_top);
+ 	region->vm_start = vma->vm_start = 0;
+ 	region->vm_end   = vma->vm_end = 0;
+ 	region->vm_top   = 0;
+@@ -1414,7 +1442,16 @@
+ 	add_nommu_region(region);
+ 	up_write(&nommu_region_sem);
+ 
+-	free_page_series(from, to);
++	/*
++	 * [from, to) is always a sub-range of the region's original single
++	 * gen_pool_alloc() -- gen_pool is a flat page-granularity bitmap
++	 * allocator with no "free as one block" requirement, so a partial
++	 * free here is safe.
++	 */
++	if (region->vm_from_pool)
++		nommu_userspace_pool_free((void *)from, to - from);
++	else
++		free_page_series(from, to);
+ 	return 0;
+ }
  
 --- /dev/null	2026-05-03 14:38:22.219445125 +0200
 +++ b/mm/nommu_userspace_pool.c	2026-05-05 11:14:25.134066532 +0200

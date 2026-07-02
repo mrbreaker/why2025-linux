@@ -32,7 +32,7 @@
  obj-$(CONFIG_GPIO_EN7523)		+= gpio-en7523.o
 --- /dev/null	2026-05-03 14:38:22.219445125 +0200
 +++ b/drivers/gpio/gpio-esp32p4.c	2026-05-05 11:14:25.122735372 +0200
-@@ -0,0 +1,403 @@
+@@ -0,0 +1,413 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * GPIO controller driver for the Espressif ESP32-P4.
@@ -52,10 +52,11 @@
 + * (relative to whichever bank this chip owns) and translate them via the
 + * driver-side `pin_offset` of the bank.
 + *
-+ * IO MUX lives at 0x500E1000 (not in this MMIO window) — only the bank-0
-+ * driver maps it; bank 1 reuses bank-0's mapping by symbol if needed in
-+ * the future. For now both banks duplicate the IO MUX mapping for
-+ * pin-config simplicity.
++ * IO MUX lives at 0x500E1000 (not in this MMIO window). Both banks map
++ * it independently (each bank's own devm_ioremap of the same physical
++ * page) and address into it using the global pin number (bank_id's
++ * pin_offset + chip-relative offset), so bank 0 and bank 1 always touch
++ * disjoint IO_MUX slots despite sharing the mapping.
 + *
 + * Bank 0 carries an irq_chip (handshake/data-ready inputs from the C6
 + * Wi-Fi co-processor). Bank 1 currently has no IRQ users — its DT node
@@ -85,6 +86,7 @@
 +#define ESP32P4_GPIO_PIN_INT_ENA_CPU	BIT(13)
 +
 +#define ESP32P4_GPIO_NGPIO		32 /* GPIOs per bank */
++#define ESP32P4_IO_MUX_NPINS		(ARRAY_SIZE(esp32p4_gpio_banks) * ESP32P4_GPIO_NGPIO)
 +
 +/*
 + * IO MUX lives in a separate MMIO region at 0x500E1000. GPIO_FUNCn_OUT_SEL_CFG
@@ -248,10 +250,10 @@
 +	if (!gpio->iomux)
 +		return 0;
 +
-+	prev = readl(gpio->iomux + ESP32P4_IO_MUX_PIN(offset));
++	prev = readl(gpio->iomux + ESP32P4_IO_MUX_PIN(gpio->regs->pin_offset + offset));
 +	val = (prev & ~IO_MUX_MCU_SEL_MASK) | IO_MUX_MCU_SEL_GPIO | IO_MUX_FUN_IE;
 +	if (val != prev)
-+		writel(val, gpio->iomux + ESP32P4_IO_MUX_PIN(offset));
++		writel(val, gpio->iomux + ESP32P4_IO_MUX_PIN(gpio->regs->pin_offset + offset));
 +
 +	return 0;
 +}
@@ -273,7 +275,7 @@
 +	if (!gpio->iomux)
 +		return -ENOTSUPP;
 +
-+	prev = readl(gpio->iomux + ESP32P4_IO_MUX_PIN(offset));
++	prev = readl(gpio->iomux + ESP32P4_IO_MUX_PIN(gpio->regs->pin_offset + offset));
 +	val = prev;
 +
 +	switch (param) {
@@ -291,7 +293,7 @@
 +	}
 +
 +	if (val != prev)
-+		writel(val, gpio->iomux + ESP32P4_IO_MUX_PIN(offset));
++		writel(val, gpio->iomux + ESP32P4_IO_MUX_PIN(gpio->regs->pin_offset + offset));
 +	return 0;
 +}
 +
@@ -328,8 +330,16 @@
 +	if (!gpio->base)
 +		return dev_err_probe(dev, -ENOMEM, "failed to map GPIO registers\n");
 +
-+	/* IO MUX is a separate fixed region; not declared in DT, just map it. */
-+	gpio->iomux = devm_ioremap(dev, ESP32P4_IO_MUX_BASE, ESP32P4_GPIO_NGPIO * 4 + 4);
++	/*
++	 * IO MUX is a separate fixed region; not declared in DT, just map it.
++	 * Both bank probes map the same physical page independently (see the
++	 * file comment above), and each bank's .request/.set_config index
++	 * into it using the *global* pin number (pin_offset + offset), so
++	 * every instance needs the mapping to cover all banks' pins, not
++	 * just its own ESP32P4_GPIO_NGPIO worth.
++	 */
++	gpio->iomux = devm_ioremap(dev, ESP32P4_IO_MUX_BASE,
++				  ESP32P4_IO_MUX_PIN(ESP32P4_IO_MUX_NPINS - 1) + 4);
 +	if (!gpio->iomux)
 +		dev_warn(dev, "failed to map IO_MUX; pin function will not be configured per request\n");
 +
