@@ -1,95 +1,99 @@
 # Building why2025-linux
 
-Three artifacts to build, in order:
+Three artifacts, in order:
 
   1. **Kernel + rootfs** via Buildroot 2025.02.15 (Linux 6.18.35 LTS).
-  2. **Boot shim** via ESP-IDF v5.5.3 (the small ESP32-P4 application
-     that loads the kernel into PSRAM and jumps to it).
-  3. **C6 slave firmware** via ESP-IDF (the ESP32-C6 coprocessor that
-     handles Wi-Fi, BT, and the backlight PWM over SPI).
+  2. **Boot shim** via ESP-IDF v5.5.3 — loads the kernel into PSRAM and
+     jumps to it.
+  3. **C6 slave firmware** via ESP-IDF — Wi-Fi/BT/backlight coprocessor.
 
-You build (1) and (2) on a Linux host (Buildroot doesn't run on macOS).
-This project's reference setup is an OrbStack VM on macOS, but any
-Ubuntu / Debian box works. (3) builds the same way as any ESP-IDF
-project.
+(1) needs Linux — Buildroot doesn't run on macOS. (2) and (3) build
+fine natively on macOS; the reference setup builds them in the same
+Linux VM as (1) for one toolchain, but that's not required.
 
-## Prerequisites
+Hitting an error that doesn't look like it belongs to you? Check
+[Troubleshooting](#troubleshooting) first — several of these are host-
+environment gotchas, not bugs in this repo.
 
-  - Linux build host (Ubuntu 24.04 reference).
-  - ESP-IDF v5.5.3, installed per
-    https://docs.espressif.com/projects/esp-idf/en/v5.5.3/esp32p4/get-started/.
-    Set `IDF_PATH` and source `$IDF_PATH/export.sh`.
-  - Buildroot 2025.02.15: `git clone -b 2025.02.15 https://gitlab.com/buildroot.org/buildroot`
-    (2025.02.x is Buildroot's current LTS series, supported until ~March
-    2028 — stay on its point releases rather than the quarterly
-    2025.05+/2026.xx releases, which churn toolchain defaults.)
-  - Host-side flash tools (run from macOS where the badge is plugged in):
-    `pip install esptool pyserial`
-  - `tio` for serial console (optional but recommended).
+## Getting the source
 
-### Building on macOS
+Clone Buildroot as `buildroot/` inside this checkout — `.gitignore`
+and every path below assume this layout, and `post-image.sh` publishes
+flashable images to `buildroot/output/images/` relative to it:
 
-Buildroot doesn't run on macOS, so you need a Linux environment. Two
-common options:
+```bash
+git clone -b 2025.02.15 https://gitlab.com/buildroot.org/buildroot
+```
 
-  - **OrbStack** (https://orbstack.dev) — fast, lightweight Linux VMs
-    with first-class filesystem sharing. Reference setup: `orb create
-    ubuntu rv32dev`, then symlink `~/esp32p4` on the macOS side to
-    `~/esp32p4` inside the VM so paths match in both places. ESP-IDF
-    and Buildroot both install inside the VM. esptool runs from macOS
-    (USB passthrough is unreliable on virtualised guests).
+2025.02.x is Buildroot's current LTS, supported until ~March 2028 —
+stay on its point releases rather than the quarterly 2025.05+/2026.xx
+releases, which churn toolchain defaults.
 
-  - **Lima**, **Multipass**, **UTM**, or any other Linux VM. Same
-    pattern: build inside Linux, flash from macOS where the badge is
-    enumerated as `/dev/cu.wchusbserial10`.
-
-Inside a VM you can prefix commands with `orb -m rv32dev bash -c '...'`
-(OrbStack) or use `ssh` (Lima/UTM) for one-shot builds without entering
-a shell.
-
-## 0. One-time setup after cloning
-
-Buildroot's `.config` (and Linux's `CONFIG_EXTRA_FIRMWARE_DIR`) only
-accept absolute filesystem paths, so we can't ship them committed. The
-two files that need patching are `configs/why2025_defconfig` and
-`patches/linux/kernel.config`; both contain the literal token
-`@WHY2025_LINUX@` wherever an absolute path to this repo is needed
-(rootfs overlay, post-build hook, kernel patch dir, kernel custom
-config, embedded firmware dir).
-
-A helper substitutes that token with the repo's actual absolute path:
+Buildroot's `.config` and `CONFIG_EXTRA_FIRMWARE_DIR` only accept
+absolute paths, so `configs/why2025_defconfig` and
+`patches/linux/kernel.config` ship with the token `@WHY2025_LINUX@`
+wherever this repo's path is needed. Substitute it from the repo root:
 
 ```bash
 ./setup-paths.sh
 ```
 
-It replaces every `@WHY2025_LINUX@` with `$(pwd)`. Idempotent — safe to
-re-run after a `git pull` or a fresh checkout. If you'd rather do it by
-hand:
+Idempotent — safe to re-run after `git pull`. Confirms itself:
+`grep -r '@WHY2025_LINUX@' configs patches/linux/*.config` should
+return nothing. By hand:
+`sed -i.bak "s|@WHY2025_LINUX@|$PWD|g" configs/why2025_defconfig patches/linux/kernel.config`.
 
-```bash
-sed -i.bak "s|@WHY2025_LINUX@|$PWD|g" configs/why2025_defconfig patches/linux/kernel.config
-```
+## Environment setup
 
-You'll know it worked when
-`grep -r '@WHY2025_LINUX@' configs patches/linux/*.config`
-returns nothing.
+  - **Linux host** for step 1 (Ubuntu 24.04 reference). On macOS, use
+    a VM:
+      - **OrbStack** — `orb create ubuntu rv32dev`. Shares the Mac
+        filesystem into the VM at the same paths, so this checkout is
+        reachable from inside the VM unchanged. Run one-shot commands
+        with `orb -m rv32dev bash -c '...'`.
+      - **Lima**, **Multipass**, **UTM** work the same way.
+
+    Build Buildroot's `output/` on the VM's native disk, not the
+    shared macOS mount — see
+    [Troubleshooting](#too-many-open-files-building-on-a-mac-shared-vm-mount)
+    if you skip this and hit `Too many open files`.
+
+    USB passthrough to a VM is unreliable, so flash and monitor serial
+    from the host OS, not the VM — the badge enumerates there directly.
+
+  - **Host packages** (Ubuntu/Debian):
+    ```bash
+    sudo apt update && sudo apt install -y \
+      build-essential file bc cpio rsync unzip git wget \
+      libncurses-dev libssl-dev python3 perl
+    ```
+    A minimal/cloud image is usually missing several of these — see
+    [Troubleshooting](#missing-host-packages).
+
+  - **ESP-IDF v5.5.3** for the boot shim (step 2), per
+    https://docs.espressif.com/projects/esp-idf/en/v5.5.3/esp32p4/get-started/.
+    Set `IDF_PATH`, then `source $IDF_PATH/export.sh` in every shell
+    before running `idf.py` — it doesn't persist across shells. The
+    commands below repeat it for that reason; skip it if you've
+    already sourced it in the current shell. The C6 slave (step 3)
+    manages its own separate ESP-IDF checkout — see that step.
+
+  - **Flash tools**, on whichever host the badge is plugged into:
+    `pip install esptool pyserial`, and `tio` for the serial console.
 
 ## 1. Kernel + rootfs
 
 ```bash
-cd /path/to/buildroot
-
-# Easiest path: load the shipped defconfig (after running setup-paths.sh).
-cp /path/to/why2025-linux/configs/why2025_defconfig .config
+cd /path/to/why2025-linux/buildroot
+cp ../configs/why2025_defconfig .config
 make olddefconfig
 make -j$(nproc)
 ```
 
-The shipped defconfig already wires `BR2_LINUX_KERNEL_PATCH`,
-`BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE`, `BR2_ROOTFS_OVERLAY`, and
-`BR2_ROOTFS_POST_BUILD_SCRIPT` to the right paths in this repo. If you
-prefer to override at the make command line:
+The defconfig wires `BR2_LINUX_KERNEL_PATCH`,
+`BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE`, `BR2_ROOTFS_OVERLAY`, and the
+post-build/post-image scripts to this repo already. To override at the
+command line instead of running `setup-paths.sh`:
 
 ```bash
 make BR2_LINUX_KERNEL_PATCH=/path/to/why2025-linux/patches/linux \
@@ -97,17 +101,19 @@ make BR2_LINUX_KERNEL_PATCH=/path/to/why2025-linux/patches/linux \
      ...
 ```
 
-Outputs land in `output/images/`:
+`patches/buildroot/post-image.sh` publishes to
+`buildroot/output/images/` after every build, in-tree or via the
+`O=<dir>` layout in [Troubleshooting](#too-many-open-files-building-on-a-mac-shared-vm-mount):
 
   - `Image` — flat kernel image (~6.5 MB)
   - `rootfs.squashfs` — read-only root (~5 MB)
-  - `output/build/linux-6.18.35/arch/riscv/boot/dts/espressif/esp32p4-why2025.dtb`
+  - `esp32p4-why2025.dtb` — pulled out of the kernel build tree, since
+    the kernel packaging here doesn't install DTBs into `output/images/`
 
-The buildroot overlay (`patches/buildroot/overlay/`) is applied
-automatically if the buildroot config points at it. Post-build script in
+The rootfs overlay (`patches/buildroot/overlay/`) applies automatically.
 `patches/buildroot/post-build.sh` chmods init scripts.
 
-Faster rebuilds:
+Faster rebuilds (prefix `O=~/br-output` too if you're using that layout):
 ```bash
 # Just the kernel after a patch change
 make linux-rebuild all -j$(nproc)
@@ -116,11 +122,10 @@ make linux-rebuild all -j$(nproc)
 make linux-reconfigure all -j$(nproc)
 ```
 
-> **Note:** Buildroot's overlay rsync only *adds* files. If you remove
-> something from `patches/buildroot/overlay/` (e.g. an init.d script),
-> the file persists in `output/target/` from the previous build and
-> ends up in the rootfs anyway. After shrinking the overlay run
-> `rm -rf output/target` (or `make clean`) before the next build.
+> **Note:** the overlay rsync only *adds* files. Removing something
+> from `patches/buildroot/overlay/` leaves it in `output/target/` from
+> the previous build. Run `rm -rf output/target` (or `make clean`)
+> after shrinking the overlay.
 
 ## 2. Boot shim
 
@@ -132,128 +137,149 @@ idf.py build
 
 Output: `build/linux-native.bin` at flash offset `0x10000`.
 
-The boot shim does:
+The boot shim:
   - Maps the rootfs partition into the IDF cache window.
-  - Two-tier MMU prewalk (coarse 64 KB stride + fine 64 B stride for the
-    last 64 KB to fix near-EOF squashfs metadata reads — see the comments
-    in `linux-native/main/main.c`).
-  - Patches the DTB's `flash@deadbeef` placeholder with the actual VA + size.
+  - Prewalks it (coarse 64 KB stride, fine 64 B stride over the last
+    64 KB) to avoid near-EOF squashfs metadata read errors — see
+    `linux-native/main/main.c`.
+  - Patches the DTB's `flash@deadbeef` placeholder with the real VA + size.
   - Jumps to `0x48000000`.
 
 ## 3. C6 slave firmware
 
-The slave is a small fork of esp-hosted-ng v1.0.6. We don't carry the
-full slave tree in this repo; instead, clone upstream and apply our
-patches:
+A small fork of esp-hosted-ng v1.0.6, not vendored here — clone
+upstream and apply our patches. This one needs its own ESP-IDF, not
+the v5.5.3 from Environment setup — `esp_driver/setup.sh` clones and
+patches the pinned version esp-hosted-ng actually builds against:
 
 ```bash
 git clone -b release/ng-1.0.6 https://github.com/espressif/esp-hosted.git
-cd esp-hosted/esp_hosted_ng/esp/esp_driver/network_adapter
+cd esp-hosted/esp_hosted_ng/esp/esp_driver
+./setup.sh
 
+cd network_adapter
 for p in /path/to/why2025-linux/patches/c6-slave/00[0-9][0-9]-*.patch; do
     patch -p1 -i "$p"
 done
 
-. $IDF_PATH/export.sh
+. ../esp-idf/export.sh
+rm -f sdkconfig          # else set-target keeps a stale config
 idf.py set-target esp32c6
 idf.py build
 ```
 
-Output: `build/network_adapter.bin`. Flash via the **back** USB-C port
-(CH334 hub reaches the C6 directly); hold `SW1` (BOOT) low at reset to
-enter ROM download mode, then:
+Patch 0005 pins the transport to SPI (esp-hosted-ng defaults the C6 to
+SDIO, which won't talk to the P4's SPI host — no `wlan0`). Confirm from
+the C6's boot banner on its USB console that it reads `Transport used
+:: SPI only`, not `SDIO only`.
+
+Flash via the **bottom** USB-C port (the C6's native USB — see
+`HARDWARE.md`; find the port with `ls /dev/cu.*`). Easiest:
+
+```bash
+idf.py -p /dev/cu.usbmodem<your-c6-port> flash
+```
+
+Or with esptool directly — all four images at their offsets from
+`build/flasher_args.json`:
 
 ```bash
 esptool --chip esp32c6 -p /dev/cu.usbmodem<your-c6-port> \
   --before default-reset --after hard-reset \
-  write-flash 0x0 build/network_adapter.bin
+  write-flash --flash-mode dio --flash-size 4MB --flash-freq 80m \
+  0x0     build/bootloader/bootloader.bin \
+  0x8000  build/partition_table/partition-table.bin \
+  0xd000  build/ota_data_initial.bin \
+  0x10000 build/network_adapter.bin
 ```
 
-(In-band OTA from Linux is also possible once Wi-Fi is up; see
-`drivers/net/wireless/espressif/esp_hosted/main.c` `ota_file=` module
-parameter.)
+> **Warning:** do NOT flash `network_adapter.bin` alone at `0x0` (an
+> older revision of this doc said to) — that's the app image, and at
+> `0x0` it overwrites the C6's bootloader, leaving the C6 unbootable
+> until reflashed correctly.
+
+In-band OTA from Linux also works once Wi-Fi is up — see
+`drivers/net/wireless/espressif/esp_hosted/main.c`'s `ota_file=`
+module parameter.
 
 See `patches/c6-slave/README.md` for the per-patch breakdown.
 
 ## Flashing
 
-From macOS where the badge is plugged in (side USB-C reaches the P4 via
-CH340; close `tio` first or esptool will fail with "port busy"):
+Badge plugged in (side USB-C reaches the P4 via CH340; close `tio`
+first or esptool fails with "port busy"; find your port with
+`ls /dev/cu.*`):
 
 ```bash
-cd /path/to/buildroot
+cd /path/to/why2025-linux/buildroot
 
-esptool --chip esp32p4 -p /dev/cu.wchusbserial10 -b 460800 \
+esptool --chip esp32p4 -p /dev/cu.wchusbserial<your-p4-port> -b 460800 \
   --before default-reset --after hard-reset \
   write-flash --flash-mode dio --flash-size 16MB --flash-freq 40m \
-  0x2000   /path/to/why2025-linux/linux-native/build/bootloader/bootloader.bin \
-  0x8000   /path/to/why2025-linux/linux-native/build/partition_table/partition-table.bin \
-  0x10000  /path/to/why2025-linux/linux-native/build/linux-native.bin \
+  0x2000   ../linux-native/build/bootloader/bootloader.bin \
+  0x8000   ../linux-native/build/partition_table/partition-table.bin \
+  0x10000  ../linux-native/build/linux-native.bin \
   0x90000  output/images/Image \
   0x710000 output/images/rootfs.squashfs \
-  0xF10000 output/build/linux-6.18.35/arch/riscv/boot/dts/espressif/esp32p4-why2025.dtb
+  0xF10000 output/images/esp32p4-why2025.dtb
 ```
 
-When only the kernel changed, drop the rootfs/dtb lines. When only
-userspace changed, flash rootfs alone (offset 0x710000).
+Kernel-only change: drop the rootfs/dtb lines. Userspace-only change:
+flash rootfs alone (offset 0x710000).
 
 ## Running sensorpanel
 
-`sensorpanel` is the BME680 + BMI270 live-readout demo on the DSI
-panel. It is **not** started at boot by default. Two ways to launch it:
+`sensorpanel` renders live BME680 + BMI270 readings to the DSI panel.
+Not started at boot by default:
 
 ```sh
-# Manual one-shot (after login). Ctrl+C to exit.
+# Manual one-shot. Ctrl+C to exit.
 /usr/bin/sensorpanel
 ```
 
 ```sh
-# Enable auto-start on every boot. Recovery: rm /etc/sensorpanel.enable
+# Auto-start on every boot. Recovery: rm /etc/sensorpanel.enable
 touch /etc/sensorpanel.enable
 ```
 
-The auto-start path is gated by `/etc/init.d/S98sensorpanel`; without
-the gate file present it short-circuits at the top and does nothing.
+Gated by `/etc/init.d/S98sensorpanel`, which no-ops without the gate file.
 
 ## Running fbDOOM
 
-The saved config enables `BR2_PACKAGE_FBDOOM=y` + `BR2_PACKAGE_DOOM_WAD=y`
-so `fbdoom` and a shareware WAD land in the rootfs.
+The saved config enables `BR2_PACKAGE_FBDOOM=y` + `BR2_PACKAGE_DOOM_WAD=y`.
 
-> **Warning:** `fbdoom` and `doom-wad` are **not** upstream Buildroot
-> packages — they exist only as local package additions in the reference
-> build tree (not yet vendored into this repo). On a fresh Buildroot
-> clone, `make olddefconfig` silently drops both options and the rootfs
-> builds without DOOM. Copy the package directories from the old build
-> tree into the new clone's `package/` (and re-add the `source
-> "package/fbdoom/Config.in"` / `source "package/doom-wad/Config.in"`
-> lines to `package/Config.in`) before configuring.
+> **Warning:** `fbdoom`/`doom-wad` aren't upstream Buildroot packages —
+> local additions in the reference build tree, not yet vendored here.
+> A fresh Buildroot clone drops both options silently at
+> `olddefconfig`. Copy the package directories into the new clone's
+> `package/` (and re-add the `source "package/fbdoom/Config.in"` /
+> `"package/doom-wad/Config.in"` lines to `package/Config.in`) first.
 
-After login on the badge:
+After login:
 
 ```sh
-# 6 MB Z-zone — biggest setting that fits the userspace mmap pool reserved
-# by patch 0010 (10 MB at 0x49600000). -iwad path may differ depending on
-# the Buildroot version; check /usr/share/games/doom/ first.
+# 6 MB Z-zone — the largest that fits the nommu-userspace-pool reserved
+# by patch 0010. -iwad path varies; check /usr/share/games/doom/ first.
 fbdoom -iwad /usr/share/games/doom/doom1.wad -mb 6
 ```
 
-fbdoom takes over /dev/fb0, so fbcon stops drawing on the panel for
-the duration of the game. The keypad maps to F1..F6 + arrow keys; see
-the DTS keymap for the full set. Backspace exits.
+Takes over `/dev/fb0` — fbcon stops drawing until it exits. Keypad:
+F1..F6 + arrows (see the DTS keymap for the full set), Backspace exits.
 
-If you hit `Z_Init: alloc failed` or `mmap failed` on startup, that's
-the NOMMU pool exhaustion failure — `-mb 6` is the safe ceiling on this
-build. Smaller values (e.g. `-mb 2`) work in even more constrained
-configurations.
+`Z_Init: alloc failed` or `mmap failed` at startup means NOMMU pool
+exhaustion — `-mb 6` is the ceiling here; try `-mb 2` on more
+constrained builds.
 
 ## Monitoring
 
 ```bash
-tio /dev/cu.wchusbserial10        # interactive
-python3 tools/bootcap.py 25       # 25 s boot capture (close tio first)
-python3 tools/freezetest.py 30 90 # 30-cycle reliability test
+tio /dev/cu.wchusbserial<your-p4-port>  # interactive
+python3 tools/bootcap.py 25             # 25 s boot capture (close tio first)
+python3 tools/freezetest.py 30 90       # 30-cycle reliability test
 ```
+
+The `tools/*.py` scripts hardcode `/dev/cu.wchusbserial10` internally —
+edit the device path in the script if yours differs.
 
 See [`tools/README.md`](tools/README.md) for the full harness.
 
@@ -269,3 +295,96 @@ See [`tools/README.md`](tools/README.md) for the full harness.
 | 0x090000  | 6.5 MB | Linux Image          |
 | 0x710000  | 8 MB   | rootfs (squashfs, must be POW2) |
 | 0xF10000  | 64 KB  | Device tree blob     |
+
+## Troubleshooting
+
+### Missing host packages
+
+A minimal/cloud Ubuntu image (a fresh `orb create ubuntu` included) is
+usually missing packages Buildroot's dependency check requires, or
+that the kernel build needs later:
+
+```bash
+sudo apt update && sudo apt install -y \
+  build-essential file bc cpio rsync unzip git wget \
+  libncurses-dev libssl-dev python3 perl
+```
+
+`file` is usually the first one missing — fails `make` at the
+`dependencies` target before any real build starts (Buildroot's
+required-package list:
+https://buildroot.org/downloads/manual/manual.html#requirement).
+`libssl-dev` shows up later: without it the kernel build fails at
+`certs/extract-cert.c: openssl/bio.h: No such file or directory` — its
+module-signing cert-extraction tool needs OpenSSL headers regardless
+of this project's kernel config.
+
+### `/usr/bin/install` is uutils-coreutils, not GNU coreutils
+
+Ubuntu releases past 24.04 LTS default some tools to the Rust
+`uutils-coreutils` reimplementation, and Buildroot's dependency check
+rejects `install` from it (known gaps:
+https://github.com/uutils/coreutils/issues/12166). The distro ships
+the GNU binary alongside it for this transition:
+
+```bash
+sudo update-alternatives --install /usr/bin/install install /usr/bin/gnuinstall 100
+sudo update-alternatives --set install /usr/bin/gnuinstall
+```
+
+The `--set` is required — `--install` alone doesn't take effect if
+`install` is already alternatives-managed. Verify with
+`install --version` (should say "GNU coreutils"). Hitting this means
+your host isn't actually 24.04 LTS — watch for the same issue on other
+coreutils-backed tools.
+
+### "Too many open files" building on a Mac-shared VM mount
+
+Building Buildroot's `output/` on the shared macOS↔VM mount is several
+times slower than native VM disk, and on OrbStack a `make -j$(nproc)`
+kernel build can fail outright there: `fixdep: error opening file: ...
+Too many open files`, `gcc: ... Too many open files`.
+
+Not a guest limit — `ulimit -n` and `/proc/sys/fs/file-max` inside the
+VM can look completely unconstrained and it still happens, because the
+ceiling is on the macOS **host**: OrbStack's virtiofs bridge (Apple's
+VirtioFS) holds one file descriptor open per accessed inode until the
+guest sends `FUSE_FORGET`, which lags under heavy concurrency, and that
+host process is bound by macOS's `kern.maxfilesperproc` (check with
+`sysctl kern.maxfilesperproc` on macOS, not the VM). A parallel kernel
+build opens enough headers at once to blow past it.
+
+Two fixes, cheapest first:
+
+1. `make -j8` — gives `FUSE_FORGET` time to keep up. No setup, slower.
+2. Move `output/` off the shared mount, via Buildroot's `O=<dir>`:
+   ```bash
+   mkdir -p ~/br-output
+   cp /path/to/why2025-linux/configs/why2025_defconfig ~/br-output/.config
+   cd /path/to/buildroot
+   make O=~/br-output olddefconfig
+   make O=~/br-output -j$(nproc)
+   ```
+   The Buildroot checkout can stay where it is. `~/br-output` sits on
+   the VM's native disk, taking `build/`, `host/`, `staging/`,
+   `target/`, `images/` off virtiofs with it.
+   `BR2_ROOTFS_POST_IMAGE_SCRIPT` (`patches/buildroot/post-image.sh`)
+   still publishes to `<repo>/buildroot/output/images/` regardless, so
+   the build/flashing commands above don't change.
+
+   Raising `kern.maxfiles`/`kern.maxfilesperproc` on macOS and
+   restarting OrbStack works too, but it's host-wide and doesn't
+   survive a reboot.
+
+   Pass `O=~/br-output` on every subsequent command too — `menuconfig`,
+   `savedefconfig`, `clean`, the rebuild targets, all of it. Buildroot's
+   `Makefile` only honors `O` from the command line
+   (`ifneq ("$(origin O)", "command line")`); `export O=~/br-output`
+   is silently ignored and falls back to the in-tree `output/` — empty,
+   no `.config` — so it looks like the build vanished. Alias it instead:
+   ```bash
+   alias mbr='make O=~/br-output'
+   ```
+
+   Lima/Multipass/UTM have the same tradeoff with their own
+   shared-folder mechanisms, though the exact failure differs.

@@ -1,0 +1,17 @@
+diff --git a/sdkconfig.defaults.esp32c6 b/sdkconfig.defaults.esp32c6
+index 7af6abb..3cf6338 100644
+--- a/sdkconfig.defaults.esp32c6
++++ b/sdkconfig.defaults.esp32c6
+@@ -31,4 +31,10 @@ CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
+ CONFIG_ESP_WIFI_RX_BA_WIN=32
+ CONFIG_ESP_WIFI_NVS_ENABLED=n
+ CONFIG_ESP_WIFI_ENABLE_WIFI_RX_STATS=n
+-CONFIG_ESP_WIFI_ENABLE_WIFI_TX_STATS=n
+\ No newline at end of file
++CONFIG_ESP_WIFI_ENABLE_WIFI_TX_STATS=n
++# WHY2025 badge: P4<->C6 link is SPI (not the C6 SDIO default), on the
++# GPIO-matrix-mapped SDIO traces. Pins: MOSI18/MISO20/SCK19/CS21 (set in
++# spi_slave_api.c by c6-slave patch 0001), HANDSHAKE=GPIO22, DATA_READY=GPIO23.
++CONFIG_ESP_SPI_HOST_INTERFACE=y
++CONFIG_ESP_SPI_GPIO_HANDSHAKE=22
++CONFIG_ESP_SPI_GPIO_DATA_READY=23

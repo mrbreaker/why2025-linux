@@ -75,8 +75,35 @@ Both share the i2c-gpio bus 0:
 
   - PMIC-controlled. **No reset button** — hold the power button while
     plugging USB to start.
-  - Two USB-C ports: side reaches the P4 (CH340, `/dev/cu.wchusbserial10`
-    on macOS), back reaches the C6 (CH334 hub) for slave reflash.
+  - Two USB-C ports: side reaches the P4 (CH340), bottom reaches the
+    C6's native USB for slave reflash (confirmed on physical hardware
+    2026-07; previously documented as "back"). The "CH334 hub" detail
+    for the C6 port is unconfirmed — schematic research for this
+    project found no CH334 hub IC on any fetched sheet.
+  - The P4's CH340 is the 0x7522 variant (`idVendor` 0x1A86,
+    `idProduct` 0x7522). Apple's built-in `AppleUSBCHCOM` driver only
+    matches the standard 0x7523, so on macOS the WCH `CH34xVCPDriver`
+    dext is mandatory; its node is `/dev/cu.wchusbserial*`.
+  - Debugging "badge missing from /dev" on macOS:
+      - Check the USB level first:
+        `ioreg -p IOUSB -l | grep -B3 'idVendor" = 6790'`. Absent =
+        no power on the badge side (cold-start it). Present but no node
+        = the dext isn't binding.
+      - "Not binding" has two forms. `systemextensionsctl list` shows
+        the dext `enabled`, but that's not the same as loaded — confirm
+        a live process with `pgrep -f CH34x`. Enabled-but-not-running
+        after a major macOS upgrade means the dext build is stale;
+        toggling it off/on is not enough. Fully remove it (System
+        Settings → Login Items & Extensions → Driver Extensions) and
+        reinstall the current driver from
+        https://github.com/WCHSoftGroup/ch34xser_macos.
+      - Another app holding the device (Spotify, Wacom driver, ...)
+        shows up as extra children under the `USB Serial` node in
+        `ioreg -rn "USB Serial@…"`; not the usual cause but worth a
+        glance.
+      - Don't assume a `cu.usbserial-*` node is the badge — Apple's
+        FTDI driver names ports the same way, so probing an unrelated
+        FTDI adapter looks exactly like a dead badge.
 
 ## Flash layout
 
@@ -95,7 +122,6 @@ Both share the i2c-gpio bus 0:
 
 ```
 0x48000000              kernel + RAM
-0x495E0000  +128 KB     pstore/ramoops (console log across WDT resets)
 0x49600000  +10 MB      NOMMU userspace pool (FLAT exec backing)
 0x49ffffff
 ```

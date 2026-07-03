@@ -1,0 +1,24 @@
+--- a/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts
++++ b/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts
+@@ -128,6 +128,21 @@
+ 			clocks = <&xtal_clk>;
+ 			status = "okay";
+ 		};
++
++		/*
++		 * TIMG0 main watchdog (MWDT0), stage 0 = system reset.
++		 * Dead-man's switch for the silent-wedge investigation and
++		 * the machine restart handler (there is no other reboot
++		 * path on this SoC). Clocked from the 40 MHz XTAL with a
++		 * fixed in-driver prescaler; the MWDT module clock defaults
++		 * to enabled on P4 (ESP-IDF hal/esp32p4/mwdt_ll.h), so no
++		 * clocks handle is needed.
++		 */
++		wdt0: watchdog@500c2000 {
++			compatible = "espressif,esp32p4-wdt";
++			reg = <0x500c2000 0x100>;
++			timeout-sec = <30>;
++		};
+ 	};
+ };
+ / {

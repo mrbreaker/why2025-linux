@@ -14,16 +14,19 @@ ascending order of cost; each one independently moves the needle.
 > not yet built or hardware-verified.
 >
 > The "non-printk dead-man's-switch" this plan kept wishing for now
-> exists: patches 0019+0020 arm the TIMG0 MWDT from probe (kernel-fed —
-> feeds stop when the scheduler dies, chip hard-resets in ≤30 s; no
-> more deep esptool reset, so unattended soak campaigns work) and add a
-> pstore/ramoops carveout so the pre-wedge console tail survives the
-> reset (`mount -t pstore pstore /sys/fs/pstore` after reboot). The
-> PSRAM-persistence premise for ramoops is unverified — checking that a
-> deliberate `echo c > /proc/sysrq-trigger` panic leaves readable
-> records is the first thing to test. `reboot` also works now (MWDT
-> restart handler), and PANIC_TIMEOUT=5 turns every oops into a clean
-> reboot instead of a hang.
+> exists: patch 0019 arms the TIMG0 MWDT from probe (kernel-fed — feeds
+> stop when the scheduler dies, chip hard-resets in ≤30 s; no more deep
+> esptool reset, so unattended soak campaigns work). `reboot` also
+> works now (MWDT restart handler), and PANIC_TIMEOUT=5 turns every
+> oops into a clean reboot instead of a hang.
+>
+> A ramoops log to preserve the pre-wedge console tail across that
+> reset was attempted (patch 0020) but backed out: `pstore`/
+> `persistent_ram` maps its region with `vmap()`, which BUGs on NOMMU
+> and panicked at boot (hardware-confirmed). Reviving it needs `no-map`
+> on the reserved-memory node so `persistent_ram` takes the `ioremap`
+> path instead — worth trying, since a persistent pre-wedge log is
+> exactly what this investigation wants.
 
 ## 1. Remove `idle=poll` from cmdline (cheap, ~5 min)
 

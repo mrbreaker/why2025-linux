@@ -48,7 +48,7 @@ Boot to BusyBox login takes about 7 seconds. From there:
 configs/        Saved Buildroot defconfig (Buildroot 2025.02.15 LTS)
 linux-native/   ESP-IDF boot shim
 patches/
-  linux/        13-patch kernel series + kernel.config
+  linux/        kernel patch series + kernel.config
   buildroot/    rootfs overlay + FLAT userspace utilities
   c6-slave/     patches against upstream esp-hosted-ng
 tools/          pyserial test harnesses

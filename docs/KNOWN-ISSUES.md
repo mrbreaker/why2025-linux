@@ -11,9 +11,10 @@ Reproducer (after login, badge boots cleanly):
 Kernel goes silent within seconds — no Oops, no `DETECT_HUNG_TASK`
 output, no panic. UART input is also dead, so `tools/loadtest.py`'s
 post-wedge state-capture commands return nothing. Recovery requires a
-deep esptool reset. (With patches 0019+0020 — unverified on hardware —
-a wedge should instead auto-reset via the MWDT within 30 s and leave
-the pre-wedge console tail in pstore/ramoops; see RUNTIME-WEDGE.md.)
+deep esptool reset. (With the patch 0019 MWDT — unverified on hardware
+— a wedge should instead auto-reset within 30 s; see RUNTIME-WEDGE.md.
+A ramoops log across that reset was attempted but pstore isn't
+NOMMU-safe — see patch 0020.)
 
 ### What's been ruled out
 - **Memory exhaustion.** `/proc/buddyinfo` and `/proc/meminfo` stay
@@ -48,12 +49,19 @@ No Oops because the trap-handler / printk path also dies. Cannot
 diagnose further without JTAG / SWD or a non-printk dead-mans-switch.
 See `docs/RUNTIME-WEDGE.md` for the planned next steps.
 
-### Candidate fixes shipped (2026-07, NOT yet built or hardware-verified)
+### Candidate fixes tried (2026-07) — did NOT fix the wedge
 
 A code audit found three independent mechanisms that all match the
 wedge's phenomenology (scales with fork+exec rate, silent, timer IRQ
-stops). Each now has a hardening patch; none has been proven to be THE
-cause — the `/bin/true` reproducer decides:
+stops). Each got a hardening patch (0014–0016). **Hardware-tested
+2026-07-04: the wedge still occurs** — `(while :; do /bin/true; done) &`
+wedged the kernel after ~15 s of churn (heartbeat alive to uptime ~31 s,
+then silent), same signature as before. So none of these three is the
+(sole) root cause. The patches are kept as legitimate hardening (each
+fixes a real latent bug) but are no longer wedge candidates. The one
+thing that changed for the better: the patch 0019 MWDT auto-rebooted the
+badge ~30 s after the wedge instead of a dead hang — see below. The
+three mechanisms, for the record:
 
 - **Patch 0014 — signal-path mcause poisoning.** Upstream
   `arch_do_signal_or_restart()` writes `regs->cause = -1UL` for every
@@ -77,12 +85,18 @@ cause — the `/bin/true` reproducer decides:
   watchdog (SOFTLOCKUP, HUNG_TASK, WQ_WATCHDOG) is tick-fed — which is
   precisely why the wedge produces no detector output.
 
-Verification: rebuild, then `(while :; do /bin/true; done) &` (plus
-`tools/greptest.py` for the slower classes). If the wedge persists,
-rerun with each patch individually reverted to isolate. Also worth
-adding to the matrix: a pure-syscall no-exec loop (busybox shell
-`while :; do :; done`) — if that still wedges, all exec/mm paths are
-exonerated in one experiment.
+**Watchdog outcome (patch 0019), hardware-confirmed 2026-07-04:** when
+the wedge hit, the kernel-fed MWDT stopped being fed (scheduler dead)
+and reset the badge ~30 s later — a clean auto-reboot instead of the old
+dead hang needing a deep esptool reset. The wedge is still unsolved, but
+it is now *survivable*: soak/repro campaigns no longer need manual
+recovery between hangs.
+
+Still-untried next steps (see `docs/RUNTIME-WEDGE.md`): the pure-syscall
+no-exec loop (`while :; do :; done` — if that wedges too, all exec/mm
+paths incl. the pool are exonerated in one experiment), `idle=poll`
+removal, the mm/nommu audit, and the app_pool A/B test. The three
+mechanisms above are now ruled out as sole causes, which narrows it.
 
 ### Workaround for shipping
 - Don't run sustained fork+exec loops. Real-user workloads (occasional

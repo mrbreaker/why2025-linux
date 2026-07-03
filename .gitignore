@@ -44,3 +44,6 @@ loadtest/
 heartbeat/
 greptest/
 grepbisect/
+
+# esp-hosted-ng upstream clone for the C6 slave (cloned separately, never checked in)
+/esp-hosted/

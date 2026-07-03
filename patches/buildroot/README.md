@@ -18,6 +18,13 @@ overlay-src/    C sources for the FLAT userspace binaries. Build with
                 the target.
 
 post-build.sh   Buildroot post-build hook (e.g. chmod init scripts).
+
+post-image.sh   Buildroot post-image hook (BR2_ROOTFS_POST_IMAGE_SCRIPT).
+                Publishes the final Image/rootfs.squashfs/DTB to
+                <repo>/buildroot/output/images/ regardless of whether
+                the build was in-tree or via `make O=<dir>` — see
+                BUILDING.md's "Building on macOS" section for why the
+                latter matters on OrbStack.
 ```
 
 ## The userspace utilities
@@ -37,8 +44,10 @@ make
 ```
 
 This requires the buildroot toolchain to be available at
-`$HOME/esp32p4/buildroot/output/host/bin/riscv32-buildroot-linux-uclibc-gcc`
-(adjust the `T` variable in `Makefile` if your tree lives elsewhere).
+`$HOME/buildroot/output/host/bin/riscv32-buildroot-linux-uclibc-gcc`
+(the `Makefile`'s default; override with `make BUILDROOT=/path/to/buildroot`
+or `make T=/abs/path/to/riscv32-buildroot-linux-uclibc` if your tree
+lives elsewhere).
 Outputs are placed directly into `../overlay/usr/bin/` and rsync'd into
 the rootfs by buildroot.
 

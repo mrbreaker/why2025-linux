@@ -391,7 +391,25 @@ BR2_GLOBAL_PATCH_DIR=""
 # Advanced
 #
 # BR2_FORCE_HOST_BUILD is not set
-BR2_DOWNLOAD_FORCE_CHECK_HASHES=y
+# Buildroot's own Config.in help for this option: "By default, Buildroot
+# checks hashes of all packages downloaded, except those for which a
+# custom version is used [...] With this option turned on, Buildroot
+# will check hashes of all packages, including those that use a custom
+# version" -- i.e. this option exists specifically to CLOSE the
+# exemption Buildroot grants to custom/VCS-sourced packages, which is
+# exactly what our BR2_LINUX_KERNEL_CUSTOM_GIT kernel source is. Turned
+# on, it hard-fails on "No hash found for linux-v6.18.35-git4.tar.gz"
+# every build (see BR2_LINUX_KERNEL_CUSTOM_GIT's comment). The
+# documented escape hatch (a supplementary hash file under
+# BR2_GLOBAL_PATCH_DIR) isn't reliable here: that hash would cover a
+# tarball Buildroot generates itself from the git checkout, and its
+# exact bytes aren't guaranteed identical across different git/gzip
+# versions -- a hash pinned on one machine could spuriously fail on
+# another. Leaving this off matches Buildroot's own default behavior
+# and only affects the one package that structurally can't have a
+# portable hash; every package with a real published hash (busybox,
+# uClibc-ng, wpa_supplicant, ...) is still fully verified.
+# BR2_DOWNLOAD_FORCE_CHECK_HASHES is not set
 # BR2_REPRODUCIBLE is not set
 # BR2_PER_PACKAGE_DIRECTORIES is not set
 
@@ -474,7 +492,7 @@ BR2_ROOTFS_OVERLAY="@WHY2025_LINUX@/patches/buildroot/overlay"
 BR2_ROOTFS_PRE_BUILD_SCRIPT=""
 BR2_ROOTFS_POST_BUILD_SCRIPT="@WHY2025_LINUX@/patches/buildroot/post-build.sh"
 BR2_ROOTFS_POST_FAKEROOT_SCRIPT=""
-BR2_ROOTFS_POST_IMAGE_SCRIPT=""
+BR2_ROOTFS_POST_IMAGE_SCRIPT="@WHY2025_LINUX@/patches/buildroot/post-image.sh"
 BR2_ROOTFS_POST_SCRIPT_ARGS=""
 BR2_ROOTFS_POST_BUILD_SCRIPT_ARGS=""
 BR2_ROOTFS_POST_IMAGE_SCRIPT_ARGS=""
@@ -486,13 +504,23 @@ BR2_LINUX_KERNEL=y
 # BR2_LINUX_KERNEL_LATEST_VERSION is not set
 # BR2_LINUX_KERNEL_LATEST_CIP_VERSION is not set
 # BR2_LINUX_KERNEL_LATEST_CIP_RT_VERSION is not set
-BR2_LINUX_KERNEL_CUSTOM_VERSION=y
+# BR2_LINUX_KERNEL_CUSTOM_VERSION is not set
 # BR2_LINUX_KERNEL_CUSTOM_TARBALL is not set
-# BR2_LINUX_KERNEL_CUSTOM_GIT is not set
+BR2_LINUX_KERNEL_CUSTOM_GIT=y
 # BR2_LINUX_KERNEL_CUSTOM_HG is not set
 # BR2_LINUX_KERNEL_CUSTOM_SVN is not set
-BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.18.35"
-BR2_LINUX_KERNEL_VERSION="6.18.35"
+# Cloned from the canonical stable tree rather than fetching a
+# kernel.org tarball snapshot: kernel.org and Buildroot's mirror
+# (sources.buildroot.net) only keep a rolling window of recent point
+# releases, and 6.18.35's tarball had already rotated out of both by
+# 2026-07-03, breaking a clean build. Git tags never rotate away, so
+# this is durable long-term -- the tradeoff is that Buildroot's git
+# downloader always does a full clone (no shallow-fetch support), so
+# the first fetch pulls the entire linux-stable history (several GB)
+# into $(BR2_DL_DIR)/git; later builds reuse that cache.
+BR2_LINUX_KERNEL_CUSTOM_REPO_URL="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
+BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION="v6.18.35"
+BR2_LINUX_KERNEL_VERSION="v6.18.35"
 BR2_LINUX_KERNEL_PATCH="@WHY2025_LINUX@/patches/linux"
 # BR2_LINUX_KERNEL_USE_DEFCONFIG is not set
 # BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG is not set
