@@ -9,8 +9,9 @@
  * - Raw write(2)/read(2) only: uClibc stdio FILE* drags in pthread/locale
  *   globals whose R_RISCV_32 relocs elf2flt drops on the floor → SIGSEGV
  *   at low addresses on the first FILE-touching call.
- * - No u64/u64 division: the helper hangs forever on this build's gcc
- *   13.3.0 + uClibc combo. Kernel-side or userspace, same trap.
+ * - No u64/u64 division: the helper hangs forever on the buildroot gcc
+ *   13.x + uClibc combo (observed on 13.3.0). Kernel-side or userspace,
+ *   same trap.
  * - DON'T mmap /dev/fb0. drm_fbdev_dma's fb_mmap path doesn't work on
  *   this NOMMU build (returns -EINVAL or -ENOMEM); witnessed via
  *   "sensorpanel: mmap failed" in /tmp/sp.log. Use the same pattern

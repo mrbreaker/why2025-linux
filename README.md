@@ -45,7 +45,7 @@ Boot to BusyBox login takes about 7 seconds. From there:
 ## Repository layout
 
 ```
-configs/        Saved Buildroot defconfig
+configs/        Saved Buildroot defconfig (Buildroot 2025.02.15 LTS)
 linux-native/   ESP-IDF boot shim
 patches/
   linux/        13-patch kernel series + kernel.config

@@ -2,7 +2,7 @@
 
 Three artifacts to build, in order:
 
-  1. **Kernel + rootfs** via Buildroot 2025.02.4 (Linux 6.18.35 LTS).
+  1. **Kernel + rootfs** via Buildroot 2025.02.15 (Linux 6.18.35 LTS).
   2. **Boot shim** via ESP-IDF v5.5.3 (the small ESP32-P4 application
      that loads the kernel into PSRAM and jumps to it).
   3. **C6 slave firmware** via ESP-IDF (the ESP32-C6 coprocessor that
@@ -19,7 +19,10 @@ project.
   - ESP-IDF v5.5.3, installed per
     https://docs.espressif.com/projects/esp-idf/en/v5.5.3/esp32p4/get-started/.
     Set `IDF_PATH` and source `$IDF_PATH/export.sh`.
-  - Buildroot 2025.02.4: `git clone -b 2025.02.4 https://gitlab.com/buildroot.org/buildroot`
+  - Buildroot 2025.02.15: `git clone -b 2025.02.15 https://gitlab.com/buildroot.org/buildroot`
+    (2025.02.x is Buildroot's current LTS series, supported until ~March
+    2028 — stay on its point releases rather than the quarterly
+    2025.05+/2026.xx releases, which churn toolchain defaults.)
   - Host-side flash tools (run from macOS where the badge is plugged in):
     `pip install esptool pyserial`
   - `tio` for serial console (optional but recommended).
@@ -214,9 +217,17 @@ the gate file present it short-circuits at the top and does nothing.
 
 ## Running fbDOOM
 
-The reference Buildroot config pulls `fbdoom` and a shareware WAD
-(`BR2_PACKAGE_FBDOOM=y` + `BR2_PACKAGE_DOOM_WAD=y`) so they're already
-in the rootfs.
+The saved config enables `BR2_PACKAGE_FBDOOM=y` + `BR2_PACKAGE_DOOM_WAD=y`
+so `fbdoom` and a shareware WAD land in the rootfs.
+
+> **Warning:** `fbdoom` and `doom-wad` are **not** upstream Buildroot
+> packages — they exist only as local package additions in the reference
+> build tree (not yet vendored into this repo). On a fresh Buildroot
+> clone, `make olddefconfig` silently drops both options and the rootfs
+> builds without DOOM. Copy the package directories from the old build
+> tree into the new clone's `package/` (and re-add the `source
+> "package/fbdoom/Config.in"` / `source "package/doom-wad/Config.in"`
+> lines to `package/Config.in`) before configuring.
 
 After login on the badge:
 
