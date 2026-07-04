@@ -132,20 +132,37 @@ ascending order of cost; each one independently moves the needle.
 > ESP-IDF/FreeRTOS on a P4, or accept the MWDT reset as the shipping
 > mitigation.
 
-> **Race-window mitigation shipped, pending hardware verdict (patch
-> 0029).** Recovery is impossible, but *avoidance* hasn't been tried:
-> every capture shows the latch on an mret-to-user with an interrupt
-> already pending, while kernel-return mrets never latch. Patch 0029
-> therefore drains pending CLIC interrupts from kernel context in
-> `ret_from_exception`'s user path (trampoline mret to pop the running
-> level, then a short MIE window, rescan ≤8 rounds) so the final mret
-> almost never executes with an interrupt pending. This is also the
-> discriminating experiment for the raced-mret model: reproducer wedge
-> rate should collapse by orders of magnitude if the model is right.
-> Known semantic cost: an interrupt taken in the drain window that sets
-> `TIF_NEED_RESCHED`/`TIF_SIGPENDING` isn't honoured until the next
-> trap (≤1 tick) — acceptable for the experiment; revisit if it ships
-> long-term.
+> **Avoidance falsified too (2026-07-04, patch 0029 — tried, measured,
+> reverted).** The last untried software angle was avoidance: drain any
+> *pending* CLIC interrupt from kernel context in `ret_from_exception`'s
+> user path (trampoline mret to pop the still-raised running level —
+> a plain MIE window can't accept an equal-level interrupt — then a
+> short MIE window; rescan ≤8 rounds) so the final mret never executes
+> with an interrupt pending. Hardware result, two-part:
+>
+> 1. **The wedge is unchanged.** `/bin/true` churn wedged in ~35–65 s
+>    (baseline 35–90 s); a `wifi-connect` run wedged within ~17 s of
+>    `wpa_supplicant -B`. Userspace Saved PC, WDT reset — same
+>    signature.
+> 2. **The drain provably never had work to do.** An instrumented build
+>    (counters in the wedge-trace carveout, read back over `/dev/mem`)
+>    showed 4048 executions of the drain scan across login + churn and
+>    **zero** hits of pending+enabled (IP/IE bit positions verified
+>    against Espressif's `clic_reg.h`). Makes sense in hindsight:
+>    pendency can only accumulate in the few-hundred-ns IRQs-off exit
+>    window, so "interrupt pending at the final mret" is ~once-per-
+>    minutes rare — far too rare to be the trigger.
+>
+> Conclusion: the latch is triggered by an interrupt **arriving** in
+> some exact cycle window during the mret-to-user sequence itself, not
+> by pre-existing pendency. Asynchronous arrival cannot be gated by
+> software (raising the CLIC threshold before mret deadlocks: nothing
+> ever runs to lower it). With recovery (0026/0027) and avoidance
+> (0029) both exhausted, the software story is closed: the MWDT stage-0
+> reset (0028) is the shipping mitigation, and the fix has to come from
+> Espressif. 0029 was reverted — 16 MMIO reads per user return for a
+> measured-zero benefit (the patch lives in git history at tag-time
+> `fix/wedge-discriminator`, commit 54840c0).
 
 ## 1. Remove `idle=poll` from cmdline (cheap, ~5 min)
 

@@ -84,9 +84,13 @@ restores `mpil = 0` correctly, and ESP-IDF's exit path has identical
 semantics with no visible workaround.
 
 **Mitigation shipped (patch 0028):** MWDT stage 0 = system reset, so a
-wedge self-recovers in ≤30 s. Remaining avenues: file the trace
-captures with Espressif, attempt a bare-metal/ESP-IDF reproducer, or a
-race-window-narrowing exit-shim drain (see RUNTIME-WEDGE.md).
+wedge self-recovers in ≤30 s. The exit-shim pendency drain (patch
+0029) was tried and falsified on hardware — the trigger is an
+interrupt arriving cycle-coincident with the mret, not pre-existing
+pendency (see RUNTIME-WEDGE.md). Software recovery *and* avoidance are
+now both exhausted; remaining avenues: file the trace captures with
+Espressif, or attempt a bare-metal/ESP-IDF reproducer to strengthen
+that filing.
 
 ### What's been ruled out (all hardware-tested)
 - **Memory exhaustion / the NOMMU allocator / FLAT loader / app_pool.**
@@ -111,6 +115,13 @@ race-window-narrowing exit-shim drain (see RUNTIME-WEDGE.md).
   0027's level-7 diagnostic interrupt (positive-control-verified) does
   not deliver into the wedge. The latch is core-internal and
   level-independent.
+- **"Interrupt pending at the mret" as the trigger.** A drain in the
+  exit shim (patch 0029, since reverted) guaranteed no interrupt was
+  pending at the final mret-to-user; the wedge rate didn't change, and
+  instrumentation showed pendency at that point is ~once-per-minutes
+  rare anyway (0 hits in 4048 returns). The trigger is an interrupt
+  *arriving* cycle-coincident with the mret — not gateable by
+  software. See RUNTIME-WEDGE.md.
 
 **Boot-window frequency note (2026-07-04, transcript-audited):** across
 ~20 boots in one session, **3 verified in-stream MWDT resets** hit
