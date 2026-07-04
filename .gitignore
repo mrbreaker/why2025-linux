@@ -33,7 +33,7 @@ CLAUDE.md
 patches/buildroot/overlay/usr/bin/ble_scan
 patches/buildroot/overlay/usr/bin/hci_up
 patches/buildroot/overlay/usr/bin/sensorpanel
-patches/buildroot/overlay/usr/bin/sensorpanel.gdb
+patches/buildroot/overlay/usr/bin/sleepd
 patches/buildroot/overlay/usr/bin/*.gdb
 # wifi-connect is a shell script — keep it
 

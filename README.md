@@ -35,6 +35,10 @@ Boot to BusyBox login takes about 7 seconds. From there:
 - fbDOOM playable on the panel (`-mb 6`).
 - ~97% cold-boot reliability; the residual ~1/30 boot freeze is a
   known issue (see [`docs/KNOWN-ISSUES.md`](docs/KNOWN-ISSUES.md)).
+- Sustained multi-process churn can trip a CLIC interrupt-delivery
+  latch (root-caused to silicon-level behaviour, not fixable in
+  software so far); the watchdog auto-reboots within 30 s
+  (see [`docs/RUNTIME-WEDGE.md`](docs/RUNTIME-WEDGE.md)).
 
 ## Screenshots
 

@@ -10,11 +10,15 @@ Reproducer (after login, badge boots cleanly):
 
 Kernel goes silent within seconds — no Oops, no `DETECT_HUNG_TASK`
 output, no panic. UART input is also dead, so `tools/loadtest.py`'s
-post-wedge state-capture commands return nothing. Recovery requires a
-deep esptool reset. (With the patch 0019 MWDT — unverified on hardware
-— a wedge should instead auto-reset within 30 s; see RUNTIME-WEDGE.md.
-A ramoops log across that reset was attempted but pstore isn't
-NOMMU-safe — see patch 0020.)
+post-wedge state-capture commands return nothing. Recovery is automatic:
+the patch 0019 MWDT (hardware-confirmed) hard-resets the badge ≤30 s
+after the feed stops. (A ramoops log across that reset was attempted
+but pstore isn't NOMMU-safe — see patch 0020.)
+
+**Status (2026-07-04): root-caused to the register level; every
+software recovery tried has failed; shipping mitigation is the MWDT
+stage-0 reset (patch 0028).** The full forensic trail is in
+`docs/RUNTIME-WEDGE.md`; summary below.
 
 ### Root cause (reframed 2026-07-04 by direct hardware experiment)
 
@@ -46,12 +50,43 @@ A controlled experiment on hardware (see the discriminator campaign in
 So the wedge is a **CLIC-level interrupt-delivery failure under
 concurrency**: after some interleaving of the timer interrupt with
 context switches / other interrupts, the core stops taking *any*
-interrupt while running userspace. The prime remaining suspect is the
-CLIC running interrupt-level (`mintstatus.mil`) getting stuck at max
-(all slots are level 7 with NLBITS=3, so nothing can preempt once `mil`
-is stuck high), i.e. a bug in the CLIC v0.9 `mcause` entry/exit shim's
-`mpil` handling in `arch/riscv/kernel/entry.S` (patch 0001) rather than
-anywhere in mm/exec/signal.
+interrupt while running userspace.
+
+### Root cause, register-level (2026-07-04, patches 0025–0027)
+
+The PSRAM-persistent wedge tracer (patch 0025) captured the fatal
+moment: the last interrupt ever delivered is a timer tick taken with
+**raw `mcause.mpil = 0xFF` and a userspace EPC** — the hardware claims
+the core was running userspace at interrupt level 255, a state the
+exit shim makes impossible (it writes `mpil = 0` before every `mret`).
+After that handler's `mret`, no interrupt is ever accepted again. The
+per-tick CLIC/SYSTIMER snapshots stay pristine to the end: threshold,
+slot enables/levels, and the alarm are all intact — the blockage is
+*inside the core*, not in any memory-mapped CLIC state.
+
+The model: an interrupt racing the preceding `mret` (back-to-back
+pending — which is why a second runnable task is required) is accepted
+with a mixed context save — post-`mret` privilege/EPC (user) but
+pre-`mret` interrupt level — and the core's internal running-level
+tracking never pops. Patch 0027's level-partition experiment nailed
+this: with normal slots moved to level 3 (INTCTL `0x7F`), the fatal
+record's `mpil` became `0x7F` — it tracks the raced handler's level
+exactly.
+
+The same experiment ruled out software recovery: a level-7 MWDT
+stage-0 diagnostic interrupt — proven live by a positive control on a
+healthy system — does **not** deliver into the wedged state, so the
+block is **level-independent**, and patch 0026's in-dispatch repair
+ladder (threshold pulse, per-slot INTIE toggle) doesn't unstick it
+either. This is silicon-erratum behaviour in the ESP32-P4's CLIC
+v0.9 implementation, not a kernel bug: `arch/riscv/kernel/entry.S`
+restores `mpil = 0` correctly, and ESP-IDF's exit path has identical
+semantics with no visible workaround.
+
+**Mitigation shipped (patch 0028):** MWDT stage 0 = system reset, so a
+wedge self-recovers in ≤30 s. Remaining avenues: file the trace
+captures with Espressif, attempt a bare-metal/ESP-IDF reproducer, or a
+race-window-narrowing exit-shim drain (see RUNTIME-WEDGE.md).
 
 ### What's been ruled out (all hardware-tested)
 - **Memory exhaustion / the NOMMU allocator / FLAT loader / app_pool.**
@@ -70,6 +105,12 @@ anywhere in mm/exec/signal.
 - **Sensorpanel / file-content / UART-volume specific.** Long since
   ruled out: grep loops, `/bin/true`, and the pure builtin loop all
   wedge; single-shot commands survive.
+- **Recoverable CLIC state.** Patch 0026's dispatch-time repair ladder
+  (threshold pulse, INTIE toggle on slots 16–23, run inside the last
+  delivered interrupt) does not prevent the death that follows; patch
+  0027's level-7 diagnostic interrupt (positive-control-verified) does
+  not deliver into the wedge. The latch is core-internal and
+  level-independent.
 
 **Boot-window frequency note (2026-07-04, transcript-audited):** across
 ~20 boots in one session, **3 verified in-stream MWDT resets** hit
@@ -96,14 +137,13 @@ plus a once-per-5 s heartbeat wedges in ~25 s; the busy loop *alone*
 does not wedge at all. Wall-time and "a second runnable task" matter;
 exec rate does not (a 100×-higher fork rate does not wedge 100× faster).
 
-### Diagnostic ceiling / next step
-No Oops because nothing traps — the CPU just spins in userspace with
-interrupts silently un-delivered. The ROM `Saved PC` localises it to
-userspace (confirming "timer stopped", not "trap loop"). The definitive
-next step is to record the SYSTIMER + CLIC register state (`mintstatus`,
-per-slot `INTIE`/`INTIP`, `ST_CONF`/target) into a reserved,
-`no-map` PSRAM region from the tick path and read it back after the
-watchdog reset — see `docs/RUNTIME-WEDGE.md`.
+### Why there's no Oops
+Nothing traps — the CPU just spins in userspace with interrupts
+silently un-delivered, and every configured detector (SOFTLOCKUP,
+HUNG_TASK, WQ_WATCHDOG) is tick-fed, so none can fire. The
+register-state capture this section used to call for has been built
+and run — patches 0025–0027, results under "Root cause,
+register-level" above.
 
 ### Candidate fixes tried (2026-07) — did NOT fix the wedge
 
@@ -164,12 +204,13 @@ fix the wedge** (kept as defensible hardening, honest about status):
   the CLIC delivery level, not per-task MIE (see "Root cause" above).
 
 The pure-syscall no-exec discriminator that reframed this whole issue
-*has now been run* (it wedges — exonerating exec/mm/pool). The remaining
-lead is the CLIC `mcause`/`mil` handling in `arch/riscv/kernel/entry.S`;
-the concrete next step is register-state capture across the watchdog
-reset (see `docs/RUNTIME-WEDGE.md`).
+*has now been run* (it wedges — exonerating exec/mm/pool), and the
+register-state capture it pointed to found the root cause — see "Root
+cause, register-level" above.
 
 ### Workaround for shipping
+- The MWDT stage-0 reset (patch 0028) turns any wedge into a ≤30 s
+  auto-reboot; stage 1 remains as a backstop.
 - Don't run sustained fork+exec loops. Real-user workloads (occasional
   shell commands, sensorpanel idle, wifi-connect) are safe.
 - Demos that need continuous child-process churn should be ported to a
