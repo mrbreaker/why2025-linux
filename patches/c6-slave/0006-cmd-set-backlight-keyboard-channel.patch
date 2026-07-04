@@ -1,0 +1,52 @@
+--- a/main/include/adapter.h
++++ b/main/include/adapter.h
+@@ -197,7 +197,8 @@
+ struct cmd_set_backlight {
+ 	struct command_header header;
+ 	uint8_t    brightness;
+-	uint8_t    pad[3];
++	uint8_t    channel;   /* 0 = display BL, 1 = keyboard BL */
++	uint8_t    pad[2];
+ } __packed;
+ 
+ struct scan_request {
+--- a/main/cmd.c
++++ b/main/cmd.c
+@@ -1232,18 +1232,32 @@
+     return send_command_resp(if_type, CMD_SET_TIME, CMD_RESPONSE_SUCCESS, NULL, 0, 0);
+ }
+ 
+-/* CMD_SET_BACKLIGHT: drive the display backlight LEDC channel (set up by
++/* CMD_SET_BACKLIGHT: drive one of the LEDC backlight channels (set up by
+  * why2025_backlight_init() at boot) to a raw 0..255 duty supplied by the
+- * host. Keyboard backlight stays at its slave-side default; the host has
+- * no control over channel 1 by design.
++ * host. cmd->channel selects it: 0 = display BL (GPIO 15, LEDC ch 0),
++ * 1 = keyboard BL (GPIO 10, LEDC ch 1). The channel byte occupies what
++ * used to be a pad byte, so pre-channel hosts (which zero the pad) keep
++ * addressing the display channel -- wire-compatible in both directions.
+  */
+ int process_set_backlight(uint8_t if_type, uint8_t *payload, uint16_t payload_len)
+ {
+     struct cmd_set_backlight *cmd = (struct cmd_set_backlight *)payload;
++    ledc_channel_t channel;
+ 
+-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, cmd->brightness);
+-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
++    switch (cmd->channel) {
++    case 0:
++        channel = LEDC_CHANNEL_0;
++        break;
++    case 1:
++        channel = LEDC_CHANNEL_1;
++        break;
++    default:
++        return send_command_resp(if_type, CMD_SET_BACKLIGHT, CMD_RESPONSE_FAIL, NULL, 0, 0);
++    }
+ 
++    ledc_set_duty(LEDC_LOW_SPEED_MODE, channel, cmd->brightness);
++    ledc_update_duty(LEDC_LOW_SPEED_MODE, channel);
++
+     return send_command_resp(if_type, CMD_SET_BACKLIGHT, CMD_RESPONSE_SUCCESS, NULL, 0, 0);
+ }
+ 

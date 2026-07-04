@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 /* sleepd — Fn+Esc puts the badge display to sleep, any key wakes it.
  *
- * Sleep = fb blank (DPMS off) + backlight brightness 0 + EVIOCGRAB on
- * the keypad so keystrokes don't leak to the console while dark.
- * Wake = any key press: unblank, restore the saved brightness, ungrab.
+ * Sleep = fb blank (DPMS off) + display AND keyboard backlight
+ * brightness 0 (the keyboard BL is CMD_SET_BACKLIGHT channel 1, kernel
+ * patch 0024 + c6-slave patch 0006) + EVIOCGRAB on the keypad so
+ * keystrokes don't leak to the console while dark.
+ * Wake = any key press: unblank, restore both saved brightnesses,
+ * ungrab.
  * The wake key's press is consumed by the grab; only its release
  * reaches the console, which produces no character.
  *
@@ -25,6 +28,7 @@
 
 #define EVDEV        "/dev/input/event0"
 #define BRIGHTNESS   "/sys/class/backlight/backlight/brightness"
+#define KBD_BRIGHT   "/sys/class/backlight/kbd-backlight/brightness"
 #define FB_BLANK     "/sys/class/graphics/fb0/blank"
 
 #define EV_KEY       1
@@ -33,6 +37,7 @@
 #define EVIOCGRAB    0x40045590	/* _IOW('E', 0x90, int) */
 
 #define BL_DEFAULT   76		/* C6 slave's BL_DISPLAY_INITIAL_DUTY */
+#define KBD_DEFAULT  25		/* C6 slave's BL_KEYBOARD_DUTY */
 
 /* evdev record as emitted by a 32-bit kernel: 2 x 32-bit timeval words,
  * then type/code/value. 16 bytes. */
@@ -84,7 +89,8 @@ static void write_sysfs_int(const char *path, int v)
 
 int main(void)
 {
-	int fd = -1, fn_down = 0, sleeping = 0, saved_bl = BL_DEFAULT;
+	int fd = -1, fn_down = 0, sleeping = 0;
+	int saved_bl = BL_DEFAULT, saved_kbd = KBD_DEFAULT;
 	struct ev e;
 
 	for (;;) {
@@ -115,6 +121,7 @@ int main(void)
 			if (e.value == 1) {	/* any fresh press wakes */
 				write_sysfs_int(FB_BLANK, 0); /* UNBLANK */
 				write_sysfs_int(BRIGHTNESS, saved_bl);
+				write_sysfs_int(KBD_BRIGHT, saved_kbd);
 				ioctl(fd, EVIOCGRAB, 0);
 				sleeping = 0;
 			}
@@ -130,8 +137,12 @@ int main(void)
 			saved_bl = read_sysfs_int(BRIGHTNESS, BL_DEFAULT);
 			if (saved_bl == 0)
 				saved_bl = BL_DEFAULT;
+			saved_kbd = read_sysfs_int(KBD_BRIGHT, KBD_DEFAULT);
+			if (saved_kbd == 0)
+				saved_kbd = KBD_DEFAULT;
 			ioctl(fd, EVIOCGRAB, 1);
 			write_sysfs_int(BRIGHTNESS, 0);
+			write_sysfs_int(KBD_BRIGHT, 0);
 			write_sysfs_int(FB_BLANK, 4);	/* FB_BLANK_POWERDOWN */
 			sleeping = 1;
 			fn_down = 0;	/* releases are ours now */

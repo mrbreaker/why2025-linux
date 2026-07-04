@@ -1,0 +1,205 @@
+--- a/drivers/net/wireless/espressif/esp_hosted/include/adapter.h
++++ b/drivers/net/wireless/espressif/esp_hosted/include/adapter.h
+@@ -197,7 +197,8 @@
+ struct cmd_set_backlight {
+ 	struct command_header header;
+ 	uint8_t    brightness;
+-	uint8_t    pad[3];
++	uint8_t    channel;   /* 0 = display BL, 1 = keyboard BL */
++	uint8_t    pad[2];
+ } __packed;
+ 
+ struct scan_request {
+--- a/drivers/net/wireless/espressif/esp_hosted/include/esp_cmd.h
++++ b/drivers/net/wireless/espressif/esp_hosted/include/esp_cmd.h
+@@ -74,7 +74,7 @@
+  * returns NULL until the slave caps exchange has finished
+  * (ESP_INIT_DONE), so the pwm driver's probe can defer cleanly.
+  */
+-int cmd_set_backlight(struct esp_adapter *adapter, u8 brightness);
++int cmd_set_backlight(struct esp_adapter *adapter, u8 channel, u8 brightness);
+ struct esp_adapter *esp_hosted_get_ready_adapter(void);
+ int cmd_process_ota_write(struct esp_wifi_device *priv, char *ota_chunk, ssize_t nread);
+ int cmd_process_ota_end(struct esp_wifi_device *priv);
+--- a/drivers/net/wireless/espressif/esp_hosted/esp_cmd.c
++++ b/drivers/net/wireless/espressif/esp_hosted/esp_cmd.c
+@@ -1015,7 +1015,7 @@
+  * "Command response not expected" noise as the response landed past
+  * the wait window.
+  */
+-int cmd_set_backlight(struct esp_adapter *adapter, u8 brightness)
++int cmd_set_backlight(struct esp_adapter *adapter, u8 channel, u8 brightness)
+ {
+ 	struct command_node *cmd_node = NULL;
+ 	struct cmd_set_backlight *cmd;
+@@ -1036,6 +1036,7 @@
+ 	cmd = (struct cmd_set_backlight *)
+ 		(cmd_node->cmd_skb->data + sizeof(struct esp_payload_header));
+ 	cmd->brightness = brightness;
++	cmd->channel = channel;   /* 0 = display BL, 1 = keyboard BL */
+ 
+ 	queue_cmd_node(adapter, cmd_node, ESP_CMD_DFLT_PRIO);
+ 	queue_work(adapter->cmd_wq, &adapter->cmd_work);
+--- a/drivers/pwm/pwm-esp-hosted-c6.c
++++ b/drivers/pwm/pwm-esp-hosted-c6.c
+@@ -3,15 +3,16 @@
+  * PWM controller driver fronting the ESP32-C6 LEDC channel that drives
+  * the WHY2025 badge display backlight.
+  *
+- * Hardware: the only LED-PWM peripheral wired to the backlight pin
+- * (GPIO 15 on the C6) lives on the radio coprocessor. The HP RV32 core
+- * we run Linux on has no register access to it. Each PWM update has to
+- * traverse host -> SPI -> esp-hosted-NG -> C6 -> LEDC. The slave runs at
+- * 25 kHz, 8-bit resolution, single channel; the only knob the host gets
+- * is "duty 0..255".
++ * Hardware: the only LED-PWM peripheral wired to the backlight pins
++ * (display BL on C6 GPIO 15, keyboard BL on C6 GPIO 10) lives on the
++ * radio coprocessor. The HP RV32 core we run Linux on has no register
++ * access to it. Each PWM update has to traverse host -> SPI ->
++ * esp-hosted-NG -> C6 -> LEDC. The slave runs both channels at 25 kHz,
++ * 8-bit resolution; the only knob the host gets is "duty 0..255".
+  *
+- * Wire format: CMD_SET_BACKLIGHT (slot 32) carries one u8 brightness on
+- * the standard NG cmd queue. Latency per write is dominated by SPI
++ * Wire format: CMD_SET_BACKLIGHT (slot 32) carries a u8 channel select
++ * (0 = display, 1 = keyboard, matching hwpwm here) and a u8 brightness
++ * on the standard NG cmd queue. Latency per write is dominated by SPI
+  * round-trip (~5 ms). pwm-backlight only fires one .apply() per
+  * brightness write, so this is fine for sysfs dimming and userspace
+  * fade scripts.
+@@ -36,27 +37,30 @@
+ #include "../net/wireless/espressif/esp_hosted/include/esp_cmd.h"
+ 
+ #define ESP_C6_PWM_MAX_DUTY	255U
++#define ESP_C6_PWM_NCHANNELS	2
+ 
+ /*
+- * Duty the C6 slave programs from its own boot path
+- * (BL_DISPLAY_INITIAL_DUTY in the c6-slave series, patch 0003). Must
+- * stay in sync with the slave firmware: it seeds the dedupe cache below
+- * so the probe-time re-apply of the very same value never touches the
+- * SPI command channel.
++ * Duties the C6 slave programs from its own boot path
++ * (BL_DISPLAY_INITIAL_DUTY / BL_KEYBOARD_DUTY in the c6-slave series,
++ * patch 0003). Must stay in sync with the slave firmware: they seed the
++ * per-channel dedupe cache below so the probe-time re-apply of the very
++ * same value never touches the SPI command channel.
+  */
+-#define ESP_C6_PWM_SLAVE_BOOT_DUTY	76U
++#define ESP_C6_PWM_SLAVE_BOOT_DUTY	76U	/* channel 0: display */
++#define ESP_C6_PWM_SLAVE_KBD_DUTY	25U	/* channel 1: keyboard */
+ 
+ struct esp_c6_pwm {
+ 	struct esp_adapter *adapter;
+-	struct pwm_state cached;
+-	u32 last_sent;
+-	bool probe_apply_skipped;
++	struct pwm_state cached[ESP_C6_PWM_NCHANNELS];
++	u32 last_sent[ESP_C6_PWM_NCHANNELS];
++	bool probe_apply_skipped[ESP_C6_PWM_NCHANNELS];
+ };
+ 
+ static int esp_c6_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
+ 			    const struct pwm_state *state)
+ {
+ 	struct esp_c6_pwm *priv = pwmchip_get_drvdata(chip);
++	unsigned int ch = pwm->hwpwm;
+ 	u32 brightness;
+ 	int ret;
+ 
+@@ -99,9 +103,9 @@
+ 	 * sensible state by default; userspace can later set arbitrary
+ 	 * brightness via sysfs and those subsequent applies run normally.
+ 	 */
+-	if (!priv->probe_apply_skipped) {
+-		priv->probe_apply_skipped = true;
+-		priv->cached = *state;
++	if (!priv->probe_apply_skipped[ch]) {
++		priv->probe_apply_skipped[ch] = true;
++		priv->cached[ch] = *state;
+ 		return 0;
+ 	}
+ 
+@@ -122,17 +126,17 @@
+ 	 * a C6 reboot already loses the host brightness, and any other
+ 	 * value resynchronizes.
+ 	 */
+-	if (brightness == priv->last_sent) {
+-		priv->cached = *state;
++	if (brightness == priv->last_sent[ch]) {
++		priv->cached[ch] = *state;
+ 		return 0;
+ 	}
+ 
+-	ret = cmd_set_backlight(priv->adapter, (u8)brightness);
++	ret = cmd_set_backlight(priv->adapter, (u8)ch, (u8)brightness);
+ 	if (ret)
+ 		return ret;
+ 
+-	priv->last_sent = brightness;
+-	priv->cached = *state;
++	priv->last_sent[ch] = brightness;
++	priv->cached[ch] = *state;
+ 	return 0;
+ }
+ 
+@@ -141,7 +145,7 @@
+ {
+ 	struct esp_c6_pwm *priv = pwmchip_get_drvdata(chip);
+ 
+-	*state = priv->cached;
++	*state = priv->cached[pwm->hwpwm];
+ 	return 0;
+ }
+ 
+@@ -162,13 +166,14 @@
+ 	if (!adapter)
+ 		return -EPROBE_DEFER;
+ 
+-	chip = devm_pwmchip_alloc(dev, 1, sizeof(*priv));
++	chip = devm_pwmchip_alloc(dev, ESP_C6_PWM_NCHANNELS, sizeof(*priv));
+ 	if (IS_ERR(chip))
+ 		return PTR_ERR(chip);
+ 
+ 	priv = pwmchip_get_drvdata(chip);
+ 	priv->adapter = adapter;
+-	priv->last_sent = ESP_C6_PWM_SLAVE_BOOT_DUTY;
++	priv->last_sent[0] = ESP_C6_PWM_SLAVE_BOOT_DUTY;
++	priv->last_sent[1] = ESP_C6_PWM_SLAVE_KBD_DUTY;
+ 
+ 	chip->ops = &esp_c6_pwm_ops;
+ 
+@@ -176,7 +181,7 @@
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "pwmchip_add failed\n");
+ 
+-	dev_info(dev, "esp32-c6 backlight pwm registered (1 channel, slave-fixed 25 kHz)\n");
++	dev_info(dev, "esp32-c6 backlight pwm registered (2 channels, slave-fixed 25 kHz)\n");
+ 	return 0;
+ }
+ 
+--- a/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts
++++ b/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts
+@@ -267,6 +267,22 @@
+ 		 * single .apply() at probe and never touch userspace forks.
+ 		 */
+ 		default-brightness-level = <76>;
++	};
++
++	/*
++	 * Keyboard backlight -- second pwm-backlight on c6_pwm channel 1
++	 * (C6 GPIO 10, LEDC channel 1; CMD_SET_BACKLIGHT channel byte = 1,
++	 * needs c6-slave patch 0006 on the slave side).
++	 * default-brightness-level matches the slave's BL_KEYBOARD_DUTY so
++	 * the probe-time apply dedupes to zero SPI traffic, same trick as
++	 * the display node above.
++	 */
++	kbd_backlight: kbd-backlight {
++		compatible = "pwm-backlight";
++		pwms = <&c6_pwm 1 40000>;
++		brightness-levels = <0 255>;
++		num-interpolated-steps = <255>;
++		default-brightness-level = <25>;
+ 	};
+ };
+ 

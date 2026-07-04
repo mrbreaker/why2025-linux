@@ -71,6 +71,18 @@ anywhere in mm/exec/signal.
   ruled out: grep loops, `/bin/true`, and the pure builtin loop all
   wedge; single-shot commands survive.
 
+**Boot-window frequency note (2026-07-04):** during the sleepd bring-up
+session the same wedge (silent stall, MWDT reset ~30 s later, userspace
+`Saved PC`) fired repeatedly ~20–30 s after boot with only login-level
+activity — several times across ~20 boots, far above the historical
+"~1/30 boot freeze" rate, and once with zero interaction at all. The
+deferred-probe window (esp-hosted init + pwm-backlight probes + rcS) is
+evidently a high-concurrency danger zone for the same CLIC-delivery
+bug. Practical consequences: interactive serial work right after login
+is unreliable (do it fast, or idle ~45 s first), and any boot-time
+reliability claim needs a fresh `freezetest.py` campaign against a
+current build.
+
 ### What it scales with
 **The presence of concurrent context switches, not fork+exec rate.**
 `/bin/true` (heavy fork/exec) wedges in ~35–90 s; a builtin busy loop

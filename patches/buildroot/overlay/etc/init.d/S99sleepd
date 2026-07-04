@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # S99sleepd — launch the Fn+Esc display-sleep daemon once.
 #
-# Deliberately NOT an inittab respawn entry: a respawn line for sleepd
-# wedged the kernel within ~25 s of boot (sustained fork+exec churn is
-# this kernel's known wedge trigger — docs/KNOWN-ISSUES.md). sleepd
-# never exits by design (all error paths retry internally, including
-# waiting for /dev/input/event0 to appear), so a one-shot background
-# launch is sufficient and cannot turn into a hot respawn loop.
+# Deliberately NOT an inittab respawn entry. A respawn line was tried
+# first and that boot wedged ~25 s in — but the same boot-window wedge
+# was later seen without any respawn entry (docs/KNOWN-ISSUES.md), so
+# respawn was never proven guilty. The one-shot launch is still the
+# right shape: sleepd never exits by design (all error paths retry
+# internally, including waiting for /dev/input/event0 to appear), so
+# respawn adds nothing except the *risk* of a hot fork+exec loop — the
+# known wedge trigger — if sleepd ever gains a crash bug.
 
 case "$1" in
     start|"")

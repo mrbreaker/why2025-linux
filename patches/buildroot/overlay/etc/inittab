@@ -50,6 +50,6 @@ console::respawn:/sbin/getty -L  console 0 vt100 # GENERIC_SERIAL
 ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
 
 # WHY2025: sleepd (Fn+Esc display sleep) is launched once from
-# /etc/init.d/S99sleepd, NOT respawned from here: a respawn entry
-# wedged the kernel at boot (fork+exec churn is this kernel's known
-# wedge trigger, docs/KNOWN-ISSUES.md), and sleepd never exits anyway.
+# /etc/init.d/S99sleepd, not respawned from here — sleepd never exits
+# by design, and a respawn entry could only add a hot fork+exec loop
+# (the known wedge trigger, docs/KNOWN-ISSUES.md) if it ever crashed.
