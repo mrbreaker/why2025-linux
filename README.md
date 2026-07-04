@@ -36,8 +36,13 @@ Boot to BusyBox login takes about 7 seconds. From there:
   associate. See [`docs/KNOWN-ISSUES.md`](docs/KNOWN-ISSUES.md).
 - microSD card readable + VFAT-mountable.
 - fbDOOM playable on the panel (`-mb 6`).
-- ~97% cold-boot reliability; the residual ~1/30 boot freeze is a
-  known issue (see [`docs/KNOWN-ISSUES.md`](docs/KNOWN-ISSUES.md)).
+- Cold-boot reliability: a `freezetest.py` campaign (2026-07-04)
+  measured ~60% first-try boot success, with ~40% of boots freezing in
+  the display+backlight bring-up window (the boot-time face of the CLIC
+  wedge below). The watchdog auto-resets each freeze, so the badge
+  normally reaches login after 1–2 retries. The old "~97%" figure is
+  not supported by this build and needs a cold-power-cycle campaign to
+  re-measure (see [`docs/KNOWN-ISSUES.md`](docs/KNOWN-ISSUES.md)).
 - Sustained multi-process churn can trip a CLIC interrupt-delivery
   latch (root-caused to silicon-level behaviour, not fixable in
   software so far); the watchdog auto-reboots within 30 s

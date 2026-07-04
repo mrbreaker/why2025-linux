@@ -134,13 +134,17 @@ RTS/port-open reset reads `rst:0x1 (POWERON)` instead). One further
 incident was a **console-only freeze** (output stopped at ~3.7 s
 uptime, no WDT reset ≥76 s — kernel alive and feeding, so this is the
 older "boot freeze" class, not the wedge). A 5-boot no-interaction
-loop was clean. So: ~3/20 with light interaction vs the historical
-~1/30 — the deferred-probe window (esp-hosted init + pwm-backlight
-probes + rcS) plus a little shell activity is a danger zone for the
-same CLIC-delivery bug, while idle/normal boots look stable. Practical
-consequences: interactive serial work right after login is unreliable
-(do it fast, or idle ~45 s first), and boot-time reliability claims
-need a fresh `freezetest.py` campaign against a current build.
+loop was clean. So the deferred-probe window (esp-hosted init +
+pwm-backlight probes + rcS) plus a little shell activity is a danger
+zone for the same CLIC-delivery bug, while idle/normal boots look
+stable. Practical consequence: interactive serial work right after
+login is unreliable (do it fast, or idle ~45 s first).
+
+The "boot-time reliability claims need a fresh `freezetest.py`
+campaign" this note used to call for **has now been run** — see "Boot
+freeze in the display + backlight bring-up window" below: ~40% of
+first-try boots freeze in that window on the current build, far above
+the old ~1/30 estimate.
 
 ### What it scales with
 **The presence of concurrent context switches, not fork+exec rate.**
@@ -243,14 +247,58 @@ cause, register-level" above.
   software fix (see RUNTIME-WEDGE.md); Wi-Fi is unusable until/unless
   the underlying CLIC erratum is worked around.
 
-## Boot residual ~1/30 freeze at pwm-c6 line (deferred)
+## Boot freeze in the display + backlight bring-up window
 
-After all the pwm-c6 first-apply fixes (patch 0011), ~1 in 30 cold boots still wedges
-silently right after the kernel prints
-`esp-hosted-c6-pwm soc:pwm-c6: esp32-c6 backlight pwm registered`.
-Suspected to be a deferred-probe-context race when pwm-backlight's
-post-apply class-register path runs concurrently with another deferred
-consumer. Low priority — the boot harness retries any way.
+**Reframed 2026-07-04 by a `freezetest.py` campaign — this is far more
+frequent than the old "~1/30" estimate, and the pwm-c6 fixes did NOT
+eliminate it.** It is the same CLIC concurrency wedge (see top of this
+file / RUNTIME-WEDGE.md) hitting during the busiest interrupt window of
+boot: the esp-hosted → pwm-c6 → pwm-backlight → DSI display bring-up,
+where deferred-probe workqueues, C6 SPI traffic, and DSI GDMA all run
+against the periodic tick.
+
+**Campaign results (30 cold cycles each, independent — 45 s settle
+between trials so a wedged badge fully MWDT-resets before the next
+reset):**
+
+- **Clean kernel (0001–0024, no diagnostic tracer): 18/30 booted to
+  login first-try (60%), 12/30 froze (40%).** Every freeze was at
+  exactly one of two adjacent lines: `pwm-c6 … backlight pwm
+  registered` (5) or `[drm] fb0: … frame buffer device` (7). Nothing
+  froze after the display came up.
+- **Tracer kernel (0001–0028): ~25–33% first-try freeze**, scattered
+  earlier in boot (the per-interrupt PSRAM+cache-flush of patch 0025
+  shifts where the wedge lands but does not cause it — removing the
+  tracer did not fix the freeze).
+
+So the pwm-c6 first-apply fixes (0011), the cmd-channel ownership fix
+(0008) and the value dedupe (0018) all still leave this freeze — they
+address real bugs in that path but not the underlying CLIC wedge.
+
+**Practical impact is softer than 40% suggests:** the MWDT (patch 0019)
+auto-resets each frozen boot in ≤30 s and each attempt is independent
+at ~60%, so the badge normally reaches login after 1–2 retries
+(≈0–60 s of extra wait), not bricked. But "boots first try 60 % of the
+time" is the honest number, not "~97%".
+
+**Two harness caveats before trusting 40 % as the true cold-boot rate
+(both would need physical power-cycling to rule out):**
+- `freezetest.py` pulses RTS, which resets **only the P4** — the C6
+  coprocessor keeps its previous esp-hosted session. A real power-on
+  resets both. Since half the freezes are on the C6-dependent pwm-c6
+  line, a stale C6 session on warm reset may inflate the rate.
+- Warm RTS reset may also leave PSRAM / DSI state the ROM would clear
+  on a cold boot.
+
+A **cold power-cycle campaign** (physically toggling power, or a harness
+that also resets the C6) is the outstanding item to get the real
+first-try number and to decide whether the README figure should be
+corrected to it. Until then the README carries a qualified claim.
+
+### Older notes on the pwm-c6 path (bugs fixed, not the whole story)
+
+The pwm-c6 first-apply fixes below address genuine bugs in the backlight
+command path but, per the campaign above, do not remove the freeze.
 
 **Candidate contributing cause (unconfirmed, fix applied, pending hardware
 verification):** patch 0011 only skips the *first* `.apply()` call;

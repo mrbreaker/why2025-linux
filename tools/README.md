@@ -19,7 +19,7 @@ exclusive-locks the port).
 
 | Tool | Purpose |
 |------|---------|
-| `freezetest.py [N=20] [boot_window_s=30] [outdir=/tmp/freezetest]` | Cold-boot reliability. Runs N RTS-reset cycles, classifies each as success/freeze/freeze_alive, dumps boot+dmesg+/proc artifacts on success and last-printk-line on freeze. The harness used to validate the 95–100 % target. |
+| `freezetest.py [N=20] [boot_window_s=30] [outdir=/tmp/freezetest]` | Cold-boot reliability. Runs N RTS-reset cycles, classifies each as success/freeze/freeze_alive, dumps boot+dmesg+/proc artifacts on success and last-printk-line on freeze. Waits out the MWDT reset (~45 s) after a freeze so trials stay independent (a shorter breather causes false cascades). **Caveat:** RTS resets only the P4, not the C6 — for a true cold-boot figure of the esp-hosted/pwm-c6 path, physically power-cycle. Last campaign (2026-07-04): ~60 % first-try success — see `docs/KNOWN-ISSUES.md`. |
 | `heartbeat_test.py [max_min=30] [output_dir=/tmp/heartbeat]` | Light-load uptime detector. Boots, logs in, runs a builtin-only heartbeat loop, reports any ≥90 s gap. Used to confirm the badge is stable when idle. |
 | `loadtest.py [max_min=30] [output_dir=/tmp/loadtest]` | Heavy-load uptime: boot → detach fbcon → launch sensorpanel → run instrumented heartbeat that emits `/proc/buddyinfo` and key `/proc/meminfo` fields each cycle. Reproduces the runtime kernel wedge. |
 | `greptest.py [max_min=30] [outdir=/tmp/greptest]` | Same as loadtest but workload is `(while :; do grep -rl DOESNOTEXIST / >/dev/null; sleep 1; done)`. Reproduces the runtime kernel wedge faster than sensorpanel. |

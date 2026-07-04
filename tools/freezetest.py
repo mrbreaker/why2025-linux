@@ -82,8 +82,14 @@ def main():
             sys.stderr.write(f'  FREEZE        -> {path} ({len(transcript)} bytes) last="{last_line}"\n')
         last_printks.append((cycle, classification, last_line))
 
-        # 1 s breather between cycles so the CH340 fully releases.
-        time.sleep(1.0)
+        # Settle before the next RTS reset so trials stay independent. A
+        # freeze leaves the badge wedged; it only recovers via the ~30 s
+        # MWDT reset (patch 0019). Resetting again before that completes
+        # hits the badge mid-reboot and truncates the next boot, producing
+        # a false cascade of consecutive freezes. Wait it out after a
+        # freeze; a short breather is enough after a clean boot (the badge
+        # is already idle at a login prompt).
+        time.sleep(45.0 if classification != 'success' else 2.0)
 
     # Summary.
     sys.stderr.write('\n')
