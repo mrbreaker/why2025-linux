@@ -1,0 +1,131 @@
+--- a/drivers/misc/esp32p4_wedge_trace.c
++++ b/drivers/misc/esp32p4_wedge_trace.c
+@@ -87,6 +87,10 @@
+ 	u32 boot_count;
+ 	u32 ring_idx;		/* monotonic; slot = idx & (WT_NREC - 1) */
+ 	u32 tick_count;		/* monotonic; slot = cnt & (WT_NTICK - 1) */
++	u32 anomalies;		/* mpil != 0 dispatches seen this boot */
++	u32 last_anom_thresh;	/* CLIC threshold read at last anomaly */
++	u32 last_anom_c17;	/* slot 17 quad at last anomaly */
++	u32 pad;
+ };
+ 
+ struct wt_tick {
+@@ -139,19 +143,67 @@
+ 	wt_rom_writeback(WT_MAP_L1D, (u32)(uintptr_t)addr, (u32)size);
+ 	wt_rom_writeback(WT_MAP_L2,  (u32)(uintptr_t)addr, (u32)size);
+ 	local_irq_restore(flags);
++}
++
++/*
++ * Anomaly repair. A dispatch that finds mcause.mpil != 0 is the wedge
++ * fingerprint (docs/RUNTIME-WEDGE.md): Linux never nests interrupts on
++ * this port, so the interrupted context can only legitimately be at
++ * level 0. Both captured wedges show exactly one such record -- a timer
++ * interrupt that raced the previous mret and saw the pre-mret level
++ * (0xFF) -- as the LAST interrupt ever delivered; whatever internal
++ * level/gateway state the race latches then blocks all delivery once
++ * this handler returns. We are therefore running exactly one mret
++ * before the badge dies: poke the CLIC back to a sane state while code
++ * still executes. The pulses below are speculative unstick attempts
++ * (the stuck state is not architecturally visible); the tracer's
++ * post-reboot dump plus "did the repro stop wedging" is the verdict.
++ */
++static void wt_try_repair(u32 mcause)
++{
++	u32 quad, i;
++
++	wt_hdr->anomalies++;
++	wt_hdr->last_anom_thresh = readl(wt_clic_ctrl + CLIC_INT_THRESH_OFF);
++	wt_hdr->last_anom_c17 = readl(wt_clic_slots + CLIC_SLOT_SYSTIMER * 4);
++
++	/* 1. Pulse the run-time threshold to max and back: forces the
++	 *    CLIC's level comparator through a full transition. */
++	writel(0xFF000000, wt_clic_ctrl + CLIC_INT_THRESH_OFF);
++	mb();
++	writel(wt_hdr->last_anom_thresh, wt_clic_ctrl + CLIC_INT_THRESH_OFF);
++	mb();
++
++	/* 2. Toggle INTIE on the active external slots (16..23): kicks the
++	 *    per-slot gateway state machines. */
++	for (i = 16; i <= 23; i++) {
++		quad = readl(wt_clic_slots + i * 4);
++		if (!(quad & 0x100))	/* INTIE clear -- slot unused */
++			continue;
++		writel(quad & ~0x100, wt_clic_slots + i * 4);
++		mb();
++		writel(quad, wt_clic_slots + i * 4);
++		mb();
++	}
++
++	pr_alert("mpil anomaly #%u (cause=%08x) -- repair attempted\n",
++		 wt_hdr->anomalies, mcause);
++	wt_writeback(wt_hdr, sizeof(*wt_hdr));
+ }
+ 
+ void esp32p4_wedge_trace_irq_entry(struct pt_regs *regs)
+ {
+ 	struct wt_rec *rec;
++	u32 mcause;
+ 	u32 idx;
+ 
+ 	if (!wt_ready)
+ 		return;
+ 
++	mcause = csr_read(CSR_CAUSE);
+ 	idx = wt_hdr->ring_idx;
+ 	rec = &wt_ring[idx & (WT_NREC - 1)];
+-	rec->mcause = csr_read(CSR_CAUSE);
++	rec->mcause = mcause;
+ 	rec->mepc = regs->epc;
+ 	rec->mintstatus = csr_read(CSR_MINTSTATUS);
+ 	rec->mstatus = regs->status;
+@@ -159,6 +211,9 @@
+ 
+ 	wt_writeback(rec, sizeof(*rec));
+ 	wt_writeback(wt_hdr, sizeof(*wt_hdr));
++
++	if (unlikely(mcause & 0x00FF0000))
++		wt_try_repair(mcause);
+ }
+ 
+ void esp32p4_wedge_trace_tick(void)
+@@ -205,8 +260,10 @@
+ 	u32 nrec = wt_hdr->ring_idx;
+ 	u32 first, i;
+ 
+-	pr_info("prev boot #%u: %u irq records, %u ticks\n",
+-		wt_hdr->boot_count, nrec, wt_hdr->tick_count);
++	pr_info("prev boot #%u: %u irq records, %u ticks, %u mpil anomalies (last: thr=%08x c17=%08x)\n",
++		wt_hdr->boot_count, nrec, wt_hdr->tick_count,
++		wt_hdr->anomalies, wt_hdr->last_anom_thresh,
++		wt_hdr->last_anom_c17);
+ 
+ 	for (i = 0; i < WT_NTICK; i++) {
+ 		struct wt_tick *t = &wt_ticks[i];
+@@ -235,8 +292,9 @@
+ 	void *base = (void *)WT_BASE;	/* NOMMU: phys == virt */
+ 
+ 	wt_hdr = base;
+-	wt_ticks = base + 0x10;
+-	wt_ring = base + 0x10 + WT_NTICK * sizeof(struct wt_tick);
++	wt_ticks = base + sizeof(struct wt_header);
++	wt_ring = base + sizeof(struct wt_header) +
++		  WT_NTICK * sizeof(struct wt_tick);
+ 
+ 	wt_clic_ctrl = ioremap(CLIC_CTRL_BASE, 0x10);
+ 	wt_clic_slots = ioremap(CLIC_SLOTS_BASE, 0x3c0);
+@@ -256,8 +314,12 @@
+ 	wt_hdr->boot_count++;
+ 	wt_hdr->ring_idx = 0;
+ 	wt_hdr->tick_count = 0;
++	wt_hdr->anomalies = 0;
++	wt_hdr->last_anom_thresh = 0;
++	wt_hdr->last_anom_c17 = 0;
+ 	memset(wt_ticks, 0, WT_NTICK * sizeof(struct wt_tick));
+-	wt_writeback(wt_hdr, 0x10 + WT_NTICK * sizeof(struct wt_tick));
++	wt_writeback(wt_hdr, sizeof(struct wt_header) +
++		     WT_NTICK * sizeof(struct wt_tick));
+ 
+ 	wt_ready = true;
+ 	pr_info("armed: %u-entry irq ring + %u tick slots at %#lx (boot #%u)\n",
