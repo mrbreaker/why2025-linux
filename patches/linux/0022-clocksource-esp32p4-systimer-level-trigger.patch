@@ -1,0 +1,105 @@
+--- a/drivers/clocksource/timer-esp32p4-systimer.c	2026-07-04 07:18:35
++++ b/drivers/clocksource/timer-esp32p4-systimer.c	2026-07-04 07:20:12
+@@ -46,20 +46,33 @@
+ #define CLIC_SLOT_SYSTIMER  17
+ 
+ /*
+- * CLIC slot 17 is edge-triggered (DTS: IRQ_TYPE_EDGE_RISING). The flow
+- * handler we install (handle_percpu_devid_irq) does not ack the CLIC,
+- * so INTIP latches on each rising edge and we must clear it from this
+- * ISR. Without this, the second alarm sees INTIP already pending and
+- * no new edge is delivered — scheduler tick dies after the first fire.
++ * CLIC slot 17 is level-triggered (DTS: IRQ_TYPE_LEVEL_HIGH). The
++ * SYSTIMER target0 interrupt is a latched status bit (ST_INT_ST): it
++ * asserts on comparator match and stays asserted until software writes
++ * ST_INT_CLR, so the line into the CLIC is naturally level, not a pulse.
+  *
+- * CLIC base and INTIP offset come from the irqchip driver.
++ * Level mode is self-healing: as long as the status bit is set the CLIC
++ * keeps the slot pending, so the interrupt cannot be lost. This removes
++ * the fatal failure mode of the previous edge-triggered configuration.
++ * The tick clockevent is one-shot and re-armed on every interrupt (and,
++ * under load, reprogrammed from the hrtimer/nanosleep and scheduler
++ * paths too). An edge-triggered slot only has to miss ONE rising edge —
++ * e.g. a re-arm coinciding with the just-generated edge, or two edges
++ * coalescing into the single INTIP latch bit — and the scheduler tick
++ * dies permanently and silently, with the CPU left spinning in whatever
++ * userspace/idle code it was running. That is the "silent wedge under
++ * sustained fork+exec / concurrent timer churn" this port chased for
++ * months; a bare single-task busy loop (tick re-armed only from its own
++ * ISR, never concurrently) never triggered it, which is exactly what an
++ * edge-coalescing race predicts.
++ *
++ * The ISR clears ST_INT_CLR before returning, which drops the line, so
++ * no CLIC INTIP poke is needed — and writing INTIP on a level slot can
++ * disturb the pending latch (see clic_irq_ack() in the CLIC driver).
+  */
+-#define CLIC_BASE        0x20801000
+-#define CLIC_INTIP_OFF   0
+ 
+ static void __iomem *st_base;
+ static unsigned int esp32p4_timer_irq;
+-static void __iomem *clic_slot17_intip;
+ 
+ /* ------------------------------------------------------------------ */
+ /*  Counter read (52-bit, 16 MHz)                                      */
+@@ -165,18 +178,14 @@
+ {
+ 	struct clock_event_device *ce = this_cpu_ptr(&esp32p4_clock_event);
+ 
+-	/* Disable alarm and clear pending interrupt at the SYSTIMER */
++	/*
++	 * Disable the alarm and clear the SYSTIMER target0 status. Clearing
++	 * ST_INT_CLR drops the (level) line into the CLIC, so there is
++	 * nothing further to ack — the CLIC slot de-asserts with the source.
++	 */
+ 	writel(readl(st_base + ST_CONF) & ~ST_CONF_TARGET0_EN, st_base + ST_CONF);
+ 	writel(BIT(0), st_base + ST_INT_CLR);
+ 
+-	/*
+-	 * Clear CLIC slot 17 pending bit. handle_percpu_devid_irq does not
+-	 * call irq_ack, so without this the edge-triggered slot stays latched
+-	 * and no further rising edges are seen after the first fire.
+-	 */
+-	if (clic_slot17_intip)
+-		writeb(0, clic_slot17_intip);
+-
+ 	ce->event_handler(ce);
+ 	return IRQ_HANDLED;
+ }
+@@ -196,13 +205,6 @@
+ 		return -ENOMEM;
+ 	}
+ 
+-	/* Map CLIC slot 17 INTIP byte for direct ack from our ISR. */
+-	clic_slot17_intip = ioremap(CLIC_BASE + CLIC_SLOT_SYSTIMER * 4 +
+-				    CLIC_INTIP_OFF, 1);
+-	if (!clic_slot17_intip)
+-		pr_warn("could not map CLIC INTIP for slot %d; tick may stall\n",
+-			CLIC_SLOT_SYSTIMER);
+-
+ 	/* Enable SYSTIMER register file clock and counter unit 0 */
+ 	writel(readl(st_base + ST_CONF) | ST_CONF_CLK_EN | ST_CONF_UNIT0_WORK_EN,
+ 	       st_base + ST_CONF);
+--- a/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts	2026-07-04 07:18:35
++++ b/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts	2026-07-04 07:20:27
+@@ -104,13 +104,16 @@
+ 		/*
+ 		 * SYSTIMER: 52-bit counter at 16 MHz (XTAL).
+ 		 * Alarm 0 → INTMTX source 53 → CLIC slot 17.
+-		 * Edge-triggered: handle_percpu_devid_irq does not ack the CLIC,
+-		 * so we rely on the edge latch auto-clearing on ack.
++		 * Level-triggered: target0 is a latched status bit that stays
++		 * asserted until ST_INT_CLR, so the CLIC line is naturally
++		 * level. Level mode is self-healing — a lost/coalesced edge
++		 * cannot permanently stall the one-shot tick (see the driver
++		 * header for the silent-wedge failure mode this avoids).
+ 		 */
+ 		systimer: timer@500e2000 {
+ 			compatible = "espressif,esp32p4-systimer";
+ 			reg = <0x500e2000 0x100>;
+-			interrupts-extended = <&clic0 17 53 IRQ_TYPE_EDGE_RISING>;
++			interrupts-extended = <&clic0 17 53 IRQ_TYPE_LEVEL_HIGH>;
+ 			status = "okay";
+ 		};
+ 

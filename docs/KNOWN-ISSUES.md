@@ -16,38 +16,76 @@ deep esptool reset. (With the patch 0019 MWDT — unverified on hardware
 A ramoops log across that reset was attempted but pstore isn't
 NOMMU-safe — see patch 0020.)
 
-### What's been ruled out
-- **Memory exhaustion.** `/proc/buddyinfo` and `/proc/meminfo` stay
-  flat across all observed pre-wedge heartbeat samples. Order-7 (512 KB)
-  and order-8 (1 MB) blocks are still free at the wedge moment.
-- **Sensorpanel-specific.** Originally observed under sensorpanel +
-  heartbeat; later confirmed reproducible with grep loops, then with
-  pure `/bin/true` loops. Sensorpanel is sufficient but not necessary.
-- **File-content-specific.** Continuous grep loops on `/etc`, `/bin`,
-  `/sys`, `/proc`, etc. all eventually wedge. Single-shot greps that
-  finish (no loop) survive.
-- **UART output volume.** Tight CPU loops with no UART output also
-  trigger the wedge.
+### Root cause (reframed 2026-07-04 by direct hardware experiment)
+
+**The old "NOMMU FLAT exec alloc/free" hypothesis below is FALSIFIED.**
+A controlled experiment on hardware (see the discriminator campaign in
+`docs/RUNTIME-WEDGE.md`) established:
+
+- A **pure shell-builtin busy loop** — `(while :; do :; done) &`, zero
+  fork, zero exec, zero mmap, zero signals — **wedges the kernel** the
+  same way `/bin/true` does. So the trigger is not exec, not the FLAT
+  loader, not the NOMMU contiguous-block allocator, not the app_pool.
+- But that same busy loop **run in isolation** (nothing else runnable)
+  **never wedges**, even after minutes. The wedge only appears when a
+  **second runnable task** exists (a heartbeat that `echo`/`sleep`s, or
+  the fork/exec/exit churn of `/bin/true`) — i.e. when the workload
+  causes **context switches** interleaved with the periodic tick.
+- At the wedge, the ESP32-P4 ROM's watchdog-reset banner reports
+  `Core0 Saved PC` in the **userspace** address range (>25 MB above the
+  0x48000000 kernel base, well past `_end`). So the CPU is spinning in a
+  userspace loop, **never being preempted** — the SYSTIMER interrupt has
+  **stopped being delivered to the core**. The scheduler never runs, the
+  kernel-fed MWDT (patch 0019) stops being fed, and the chip resets
+  ~seconds later. That reset banner is the ground-truth wedge signal
+  (host-sleep-immune — only a real kernel wedge stops the watchdog feed).
+- Probing the console during the wedge window gets **no response on any
+  input** (UART RX is a different, level-triggered CLIC slot), so it is
+  not the timer slot alone that dies — **all** interrupt delivery stops.
+
+So the wedge is a **CLIC-level interrupt-delivery failure under
+concurrency**: after some interleaving of the timer interrupt with
+context switches / other interrupts, the core stops taking *any*
+interrupt while running userspace. The prime remaining suspect is the
+CLIC running interrupt-level (`mintstatus.mil`) getting stuck at max
+(all slots are level 7 with NLBITS=3, so nothing can preempt once `mil`
+is stuck high), i.e. a bug in the CLIC v0.9 `mcause` entry/exit shim's
+`mpil` handling in `arch/riscv/kernel/entry.S` (patch 0001) rather than
+anywhere in mm/exec/signal.
+
+### What's been ruled out (all hardware-tested)
+- **Memory exhaustion / the NOMMU allocator / FLAT loader / app_pool.**
+  A no-alloc, no-exec busy loop wedges just as hard (above).
+- **`idle=poll` / WFI.** A 100%-CPU busy loop never enters the idle
+  loop, yet wedges — the idle path is not involved.
+- **Signal delivery (SIGCHLD), exec-time cache flushes, timer re-arm
+  `-ETIME`.** Patches 0014/0015/0016 shipped and hardware-tested
+  2026-07-04: none fixed it (see below).
+- **The SYSTIMER being edge- vs level-triggered.** Patch 0022 switched
+  it to level; still wedges (below).
+- **A task resuming in userspace with interrupts masked (MIE=0).** Patch
+  0023 forces `MPIE=1` on every return to userspace; still wedges, and
+  all interrupts (not just the timer) stay dead — so the failure is at
+  the CLIC delivery level, above per-task MIE.
+- **Sensorpanel / file-content / UART-volume specific.** Long since
+  ruled out: grep loops, `/bin/true`, and the pure builtin loop all
+  wedge; single-shot commands survive.
 
 ### What it scales with
-**Fork+exec rate × wall-time.** The kernel-side heartbeat (KWB kthread,
-disabled in default builds, source at
-`drivers/misc/esp32p4-watchdog-blink.c`) and the userspace heartbeat
-both stop at the same wall-time → total kernel scheduler death, not
-just userspace or just printk.
+**The presence of concurrent context switches, not fork+exec rate.**
+`/bin/true` (heavy fork/exec) wedges in ~35–90 s; a builtin busy loop
+plus a once-per-5 s heartbeat wedges in ~25 s; the busy loop *alone*
+does not wedge at all. Wall-time and "a second runnable task" matter;
+exec rate does not (a 100×-higher fork rate does not wedge 100× faster).
 
-### Hypothesis
-Bug in the NOMMU FLAT exec contiguous-block alloc/free path under
-sustained churn. Each fork+exec of busybox needs an order-7 (512 KB)
-contiguous block; under sustained allocate/free, something in
-`mm/nommu.c` or `fs/binfmt_flat.c` reaches an unrecoverable state on
-this RV32 + 32 MB PSRAM + ESP32-P4 v1.0 silicon. CPU stalls in a path
-that doesn't service the timer IRQ.
-
-### Diagnostic ceiling reached
-No Oops because the trap-handler / printk path also dies. Cannot
-diagnose further without JTAG / SWD or a non-printk dead-mans-switch.
-See `docs/RUNTIME-WEDGE.md` for the planned next steps.
+### Diagnostic ceiling / next step
+No Oops because nothing traps — the CPU just spins in userspace with
+interrupts silently un-delivered. The ROM `Saved PC` localises it to
+userspace (confirming "timer stopped", not "trap loop"). The definitive
+next step is to record the SYSTIMER + CLIC register state (`mintstatus`,
+per-slot `INTIE`/`INTIP`, `ST_CONF`/target) into a reserved,
+`no-map` PSRAM region from the tick path and read it back after the
+watchdog reset — see `docs/RUNTIME-WEDGE.md`.
 
 ### Candidate fixes tried (2026-07) — did NOT fix the wedge
 
@@ -92,11 +130,26 @@ dead hang needing a deep esptool reset. The wedge is still unsolved, but
 it is now *survivable*: soak/repro campaigns no longer need manual
 recovery between hangs.
 
-Still-untried next steps (see `docs/RUNTIME-WEDGE.md`): the pure-syscall
-no-exec loop (`while :; do :; done` — if that wedges too, all exec/mm
-paths incl. the pool are exonerated in one experiment), `idle=poll`
-removal, the mm/nommu audit, and the app_pool A/B test. The three
-mechanisms above are now ruled out as sole causes, which narrows it.
+**Two further fixes tried and hardware-tested 2026-07-04 — also did NOT
+fix the wedge** (kept as defensible hardening, honest about status):
+
+- **Patch 0022 — level-trigger the SYSTIMER CLIC slot.** The SYSTIMER
+  was the *only* edge-triggered CLIC slot (every other peripheral is
+  `IRQ_TYPE_LEVEL_HIGH`); its `target0` output is a latched status bit,
+  so level is the natural, self-healing fit and removes the entire
+  "lost/coalesced edge kills the one-shot tick" failure class. Booted
+  cleanly; the wedge survived slightly longer but still hit. Not the
+  cause.
+- **Patch 0023 — force `MPIE=1` on return to userspace.** Tested the
+  hypothesis that a task resumes in userspace with interrupts masked.
+  Still wedged, with *all* interrupts dead — proving the failure is at
+  the CLIC delivery level, not per-task MIE (see "Root cause" above).
+
+The pure-syscall no-exec discriminator that reframed this whole issue
+*has now been run* (it wedges — exonerating exec/mm/pool). The remaining
+lead is the CLIC `mcause`/`mil` handling in `arch/riscv/kernel/entry.S`;
+the concrete next step is register-state capture across the watchdog
+reset (see `docs/RUNTIME-WEDGE.md`).
 
 ### Workaround for shipping
 - Don't run sustained fork+exec loops. Real-user workloads (occasional

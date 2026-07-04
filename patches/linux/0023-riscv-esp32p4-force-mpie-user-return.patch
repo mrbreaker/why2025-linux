@@ -1,0 +1,35 @@
+--- a/arch/riscv/kernel/entry.S
++++ b/arch/riscv/kernel/entry.S
+@@ -396,6 +396,32 @@
+ 	andi  a5, a5, 0x1
+ 	slli  a5, a5, 27
+ 	or    a3, a3, a5
++	/*
++	 * Userspace must ALWAYS resume with interrupts enabled. The MPIE
++	 * bit above is reconstructed from pt_regs->status[7], which the
++	 * context-switch and signal-delivery paths can leave clear for a
++	 * user task; mret would then return to userspace with MIE=0. A
++	 * user loop that issues no syscall (e.g. a shell `while :; do :;
++	 * done`, or a transient no-syscall window in a fork+exec loop)
++	 * then spins forever with the SYSTIMER interrupt masked: the
++	 * scheduler tick never fires, nothing ever reschedules or preempts
++	 * it, and the only visible effect is the kernel-fed MWDT (patch
++	 * 0019) resetting the chip a few seconds later. That is the silent
++	 * "wedge under sustained fork+exec / concurrent timer churn" — it
++	 * needs a second runnable task (context switches) to corrupt the
++	 * saved MPIE, which is why a single isolated busy loop never trips
++	 * it. There is no legitimate reason for userspace to run with
++	 * interrupts disabled, so force MPIE=1 on every return to user.
++	 *
++	 * PT_TP holds the pre-trap thread pointer (the entry SCRATCH
++	 * invariant); tp is still the kernel tp here (user tp is restored
++	 * below), so PT_TP != tp exactly when we are returning to user.
++	 */
++	REG_L a4, PT_TP(sp)
++	beq   a4, tp, .Lesp32p4_keep_mpie	/* PT_TP == tp -> return to kernel */
++	li    a4, (1 << 27)			/* mcause.MPIE */
++	or    a3, a3, a4
++.Lesp32p4_keep_mpie:
+ 	csrw  CSR_CAUSE, a3
+ #endif
+ 

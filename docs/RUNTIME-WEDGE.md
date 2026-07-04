@@ -28,6 +28,47 @@ ascending order of cost; each one independently moves the needle.
 > path instead — worth trying, since a persistent pre-wedge log is
 > exactly what this investigation wants.
 
+> **Update 2026-07-04 (hardware discriminator campaign — this reframes
+> everything below).** Built in the OrbStack VM, flashed, and tested on
+> the badge with a host-sleep-immune harness that classifies a wedge on
+> the ROM's `HP_SYS_HP_WDT_RESET` banner (only a real kernel wedge stops
+> feeding the MWDT). Results:
+>
+> - `(while :; do :; done) &` — **pure builtin loop, zero
+>   fork/exec/mmap/signal — WEDGES** (WDT reset), same as `/bin/true`.
+>   → steps 2 (`mm/nommu`+`binfmt_flat`), 3 (BMI/pwm), and 4 (app_pool
+>   A/B) are all **moot**: the wedge has nothing to do with exec, the
+>   FLAT loader, or the allocator.
+> - The **same loop in isolation** (no second runnable task) **does not
+>   wedge** — so step 1 (`idle=poll`) is also moot (a 100%-CPU loop never
+>   idles). The trigger is **concurrent context switches** interleaved
+>   with the periodic tick.
+> - ROM `Core0 Saved PC` at every wedge is in **userspace** → the CPU is
+>   spinning un-preempted; **interrupt delivery to the core has stopped**
+>   (console input is dead too, so it's *all* interrupts, not just the
+>   timer slot).
+> - Fixes tried and **hardware-falsified**: 0022 (level-trigger the
+>   SYSTIMER slot) and 0023 (force `MPIE=1` on user return). The latter
+>   proves it is not per-task MIE — it's CLIC-level.
+>
+> **New leading hypothesis:** the CLIC v0.9 running interrupt-level
+> (`mintstatus.mil`) gets stuck at max under a specific timer×context-
+> switch interleaving, so no interrupt (all are level 7, NLBITS=3) can
+> ever preempt again. That points at the `mcause` `mpil` save/restore in
+> the entry/exit shim (`arch/riscv/kernel/entry.S`, patch 0001), NOT at
+> mm/exec/signal.
+>
+> **Definitive next step (replaces steps 2–5 below):** capture the
+> SYSTIMER + CLIC register state — `mintstatus`/`mil`, per-slot `INTIE`
+> and `INTIP` for slots 17 (timer) and 18 (UART), `ST_CONF`+target — into
+> a reserved `no-map` PSRAM region updated from the tick path (and/or a
+> ring of the last N `mcause` values seen at trap entry), then read it
+> back over `/dev/mem` after the watchdog reset. That directly answers
+> "is `mil` stuck / is `INTIE` cleared / is the alarm disabled" and ends
+> the guessing. (`no-map` is also what a revived ramoops needs — do both
+> in one reserved region.) A `tools/` harness (`wedge_verify.py`) and the
+> VM build+flash loop are already wired up for fast iteration.
+
 ## 1. Remove `idle=poll` from cmdline (cheap, ~5 min)
 
 The current cmdline forces the CPU to spin in `cpu_idle_loop()`
