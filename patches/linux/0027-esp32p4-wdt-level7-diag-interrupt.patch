@@ -1,0 +1,286 @@
+--- a/drivers/watchdog/esp32p4_wdt.c
++++ b/drivers/watchdog/esp32p4_wdt.c
+@@ -29,11 +29,14 @@
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
++#include <linux/interrupt.h>
+ #include <linux/watchdog.h>
++#include <linux/esp32p4_wedge_trace.h>
+ 
+ #define TIMG_WDTCONFIG0			0x48
+ #define  TIMG_WDT_EN			BIT(31)
+ #define  TIMG_WDT_STG0			GENMASK(30, 29)
++#define  TIMG_WDT_STG1			GENMASK(28, 27)
+ #define  TIMG_WDT_CONF_UPDATE_EN	BIT(22)
+ #define  TIMG_WDT_CPU_RESET_LENGTH	GENMASK(20, 18)
+ #define  TIMG_WDT_SYS_RESET_LENGTH	GENMASK(17, 15)
+@@ -41,10 +44,15 @@
+ #define TIMG_WDTCONFIG1			0x4c
+ #define  TIMG_WDT_CLK_PRESCALE		GENMASK(31, 16)
+ #define TIMG_WDTCONFIG2			0x50
++#define TIMG_WDTCONFIG3			0x54
++#define TIMG_INT_ENA			0x70
++#define TIMG_INT_CLR			0x7c
++#define  TIMG_WDT_INT			BIT(2)
+ #define TIMG_WDTFEED			0x60
+ #define TIMG_WDTWPROTECT		0x64
+ 
+ #define TIMG_WDT_STG_SEL_RESET_SYSTEM	3
++#define TIMG_WDT_STG_SEL_INT		1
+ #define TIMG_WDT_RESET_LENGTH_3200_NS	7
+ #define TIMG_WDT_WKEY_UNLOCK		0x50d83aa1
+ 
+@@ -58,6 +66,8 @@
+ struct esp32p4_wdt {
+ 	struct watchdog_device wdd;
+ 	void __iomem *base;
++	int irq;
++	unsigned int diag_round;
+ };
+ 
+ static void esp32p4_wdt_unlock(struct esp32p4_wdt *wdt)
+@@ -74,21 +84,67 @@
+ static void esp32p4_wdt_arm(struct esp32p4_wdt *wdt, u32 timeout_ticks)
+ {
+ 	u32 conf = TIMG_WDT_EN |
+-		   FIELD_PREP(TIMG_WDT_STG0, TIMG_WDT_STG_SEL_RESET_SYSTEM) |
+ 		   FIELD_PREP(TIMG_WDT_SYS_RESET_LENGTH,
+ 			      TIMG_WDT_RESET_LENGTH_3200_NS) |
+ 		   FIELD_PREP(TIMG_WDT_CPU_RESET_LENGTH,
+ 			      TIMG_WDT_RESET_LENGTH_3200_NS);
+ 
++	/*
++	 * With the diagnostic IRQ wired (DTS interrupt + CLIC level
++	 * partition, docs/RUNTIME-WEDGE.md): stage 0 = level-7 interrupt
++	 * at the timeout -- deliverable even when the wedge has latched
++	 * the (level-3) running level, so it can observe and repair a
++	 * wedged system; stage 1 = system reset at 2x the timeout as the
++	 * backstop. Without the IRQ: stage 0 = system reset, the
++	 * original behaviour.
++	 */
++	if (wdt->irq > 0)
++		conf |= FIELD_PREP(TIMG_WDT_STG0, TIMG_WDT_STG_SEL_INT) |
++			FIELD_PREP(TIMG_WDT_STG1, TIMG_WDT_STG_SEL_RESET_SYSTEM);
++	else
++		conf |= FIELD_PREP(TIMG_WDT_STG0, TIMG_WDT_STG_SEL_RESET_SYSTEM);
++
+ 	esp32p4_wdt_unlock(wdt);
+ 	writel(FIELD_PREP(TIMG_WDT_CLK_PRESCALE, ESP32P4_WDT_PRESCALE),
+ 	       wdt->base + TIMG_WDTCONFIG1);
+ 	writel(timeout_ticks, wdt->base + TIMG_WDTCONFIG2);
+-	/* Stages 1-3 stay OFF: stage 0 alone resets the system. */
++	writel(timeout_ticks * 2, wdt->base + TIMG_WDTCONFIG3);
+ 	writel(conf, wdt->base + TIMG_WDTCONFIG0);
+ 	writel(conf | TIMG_WDT_CONF_UPDATE_EN, wdt->base + TIMG_WDTCONFIG0);
+ 	writel(1, wdt->base + TIMG_WDTFEED);
++	if (wdt->irq > 0)
++		writel(readl(wdt->base + TIMG_INT_ENA) | TIMG_WDT_INT,
++		       wdt->base + TIMG_INT_ENA);
++	esp32p4_wdt_relock(wdt);
++}
++
++/*
++ * Stage-0 diagnostic interrupt: fires only when feeds stopped, i.e. the
++ * scheduler is dead (the wedge) or something equally fatal. Runs at
++ * CLIC level 7 while every normal slot is level 3. Dump state, try one
++ * repair per round, shorten the next stage-0 period, and stop feeding
++ * after round 5 so the stage-1 reset ends the session.
++ */
++static irqreturn_t esp32p4_wdt_diag_isr(int irq, void *dev_id)
++{
++	struct esp32p4_wdt *wdt = dev_id;
++
++	esp32p4_wdt_unlock(wdt);
++	writel(TIMG_WDT_INT, wdt->base + TIMG_INT_CLR);
++
++	wdt->diag_round++;
++	esp32p4_wedge_trace_wdt_diag(wdt->diag_round);
++
++	if (wdt->diag_round == 1)
++		/* subsequent rounds every ~2 s instead of the full timeout */
++		writel(2 * ESP32P4_WDT_TICK_HZ, wdt->base + TIMG_WDTCONFIG2);
++	writel(readl(wdt->base + TIMG_WDTCONFIG0) | TIMG_WDT_CONF_UPDATE_EN,
++	       wdt->base + TIMG_WDTCONFIG0);
++
++	if (wdt->diag_round <= 5)
++		writel(1, wdt->base + TIMG_WDTFEED);
+ 	esp32p4_wdt_relock(wdt);
++	return IRQ_HANDLED;
+ }
+ 
+ static int esp32p4_wdt_start(struct watchdog_device *wdd)
+@@ -161,6 +217,7 @@
+ 	struct device *dev = &pdev->dev;
+ 	struct esp32p4_wdt *wdt;
+ 	u32 val;
++	int ret;
+ 
+ 	wdt = devm_kzalloc(dev, sizeof(*wdt), GFP_KERNEL);
+ 	if (!wdt)
+@@ -177,6 +234,19 @@
+ 	wdt->wdd.timeout = ESP32P4_WDT_DEFAULT_TIMEOUT_S;
+ 	wdt->wdd.parent = dev;
+ 	watchdog_set_drvdata(&wdt->wdd, wdt);
++
++	wdt->irq = platform_get_irq_optional(pdev, 0);
++	if (wdt->irq > 0) {
++		ret = devm_request_irq(dev, wdt->irq, esp32p4_wdt_diag_isr, 0,
++				       "esp32p4-wdt-diag", wdt);
++		if (ret) {
++			dev_warn(dev, "diag irq request failed (%d); stage 0 stays reset\n",
++				 ret);
++			wdt->irq = 0;
++		} else {
++			dev_info(dev, "stage-0 diagnostic interrupt armed (level-7 CLIC slot)\n");
++		}
++	}
+ 	watchdog_init_timeout(&wdt->wdd, 0, dev);
+ 	watchdog_set_restart_priority(&wdt->wdd, 128);
+ 
+--- a/drivers/irqchip/irq-esp32p4-clic.c
++++ b/drivers/irqchip/irq-esp32p4-clic.c
+@@ -33,7 +33,17 @@
+ 
+ #define CLIC_INTATTR_MMODE_LEVEL 0xC0U
+ #define CLIC_INTATTR_MMODE_EDGE  0xC2U
++/*
++ * Level partition (wedge instrumentation, docs/RUNTIME-WEDGE.md):
++ * normal slots run at CLIC level 3 (INTCTL 0x7F with NLBITS=3) and the
++ * MWDT diagnostic slot at level 7 (0xFF), so a running level latched by
++ * the mret-race wedge at the *normal* level can never mask the
++ * watchdog's stage-0 interrupt -- the one path that can still observe
++ * and repair a wedged system from software.
++ */
+ #define CLIC_INTCTL_MAX          0xFFU
++#define CLIC_INTCTL_NORMAL       0x7FU
++#define CLIC_SLOT_WDT            24
+ 
+ static void __iomem *clic_base;
+ static void __iomem *clic_intmtx_base;
+@@ -115,7 +125,8 @@
+ 	}
+ 
+ 	writeb(attr,             clic_base + hwirq * 4 + CLIC_INTATTR_OFF);
+-	writeb(CLIC_INTCTL_MAX,  clic_base + hwirq * 4 + CLIC_INTCTL_OFF);
++	writeb(hwirq == CLIC_SLOT_WDT ? CLIC_INTCTL_MAX : CLIC_INTCTL_NORMAL,
++	       clic_base + hwirq * 4 + CLIC_INTCTL_OFF);
+ 
+ 	irq_domain_set_info(d, irq, hwirq, &esp32p4_clic_chip, NULL,
+ 			    handler, NULL, NULL);
+--- a/drivers/misc/esp32p4_wedge_trace.c
++++ b/drivers/misc/esp32p4_wedge_trace.c
+@@ -252,6 +252,70 @@
+ 	wt_hdr->tick_count = cnt + 1;
+ 
+ 	wt_writeback(t, sizeof(*t));
++	wt_writeback(wt_hdr, sizeof(*wt_hdr));
++}
++
++/*
++ * MWDT stage-0 diagnostic entry (level 7, above the level-3 normal
++ * slots): if this runs, the badge is wedged -- the kernel-fed watchdog
++ * stopped being fed -- yet a level-7 interrupt was still delivered, so
++ * the block is level-based, and we can finally LOOK at the wedged
++ * state with printk alive. pr_emerg so even console_loglevel=1 shows
++ * it. One repair experiment per round; the caller re-feeds between
++ * rounds and lets stage 1 reset the chip when the ladder runs out.
++ */
++void esp32p4_wedge_trace_wdt_diag(unsigned int round)
++{
++	u32 i, quad;
++
++	if (!wt_ready)
++		return;
++
++	pr_emerg("WDT diag r%u: mintstatus=%08x thresh=%08x c17=%08x c18=%08x st_conf=%08x ena=%x raw=%x st=%x ring=%u ticks=%u anom=%u\n",
++		 round, (u32)csr_read(CSR_MINTSTATUS),
++		 readl(wt_clic_ctrl + CLIC_INT_THRESH_OFF),
++		 readl(wt_clic_slots + CLIC_SLOT_SYSTIMER * 4),
++		 readl(wt_clic_slots + CLIC_SLOT_UART0 * 4),
++		 readl(wt_st + ST_CONF), readl(wt_st + ST_INT_ENA),
++		 readl(wt_st + ST_INT_RAW), readl(wt_st + ST_INT_ST),
++		 wt_hdr->ring_idx, wt_hdr->tick_count, wt_hdr->anomalies);
++
++	switch (round) {
++	case 2:		/* threshold pulse */
++		quad = readl(wt_clic_ctrl + CLIC_INT_THRESH_OFF);
++		writel(0xFF000000, wt_clic_ctrl + CLIC_INT_THRESH_OFF);
++		mb();
++		writel(quad, wt_clic_ctrl + CLIC_INT_THRESH_OFF);
++		mb();
++		pr_emerg("WDT diag r2: threshold pulsed\n");
++		break;
++	case 3:		/* INTIE toggle on active slots */
++		for (i = 16; i <= 23; i++) {
++			quad = readl(wt_clic_slots + i * 4);
++			if (!(quad & 0x100))
++				continue;
++			writel(quad & ~0x100, wt_clic_slots + i * 4);
++			mb();
++			writel(quad, wt_clic_slots + i * 4);
++			mb();
++		}
++		pr_emerg("WDT diag r3: INTIE toggled\n");
++		break;
++	case 4:		/* full slot rewrite: ATTR + CTL + IE */
++		for (i = 16; i <= 23; i++) {
++			quad = readl(wt_clic_slots + i * 4);
++			if (!(quad & 0x100))
++				continue;
++			writel(0, wt_clic_slots + i * 4);
++			mb();
++			writel(quad, wt_clic_slots + i * 4);
++			mb();
++		}
++		pr_emerg("WDT diag r4: slots rewritten\n");
++		break;
++	default:
++		break;
++	}
+ 	wt_writeback(wt_hdr, sizeof(*wt_hdr));
+ }
+ 
+--- a/include/linux/esp32p4_wedge_trace.h
++++ b/include/linux/esp32p4_wedge_trace.h
+@@ -17,6 +17,11 @@
+ /* Called from the SYSTIMER clockevent ISR on every tick. */
+ void esp32p4_wedge_trace_tick(void);
+ 
++/* Called from the MWDT stage-0 diagnostic interrupt (level 7): dump the
++ * live CLIC/SYSTIMER state of a wedged system and attempt one repair
++ * per round. */
++void esp32p4_wedge_trace_wdt_diag(unsigned int round);
++
+ #else /* !CONFIG_ESP32P4_WEDGE_TRACE */
+ 
+ static inline void esp32p4_wedge_trace_irq_entry(struct pt_regs *regs)
+@@ -27,6 +32,10 @@
+ {
+ }
+ 
++static inline void esp32p4_wedge_trace_wdt_diag(unsigned int round)
++{
++}
++
+ #endif /* CONFIG_ESP32P4_WEDGE_TRACE */
+ 
+ #endif /* _LINUX_ESP32P4_WEDGE_TRACE_H */
+--- a/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts
++++ b/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts
+@@ -144,6 +144,15 @@
+ 		wdt0: watchdog@500c2000 {
+ 			compatible = "espressif,esp32p4-wdt";
+ 			reg = <0x500c2000 0x100>;
++			/*
++			 * Stage-0 diagnostic interrupt: INTMTX source 48
++			 * (TG0_WDT_LEVEL) -> CLIC slot 24, which the CLIC
++			 * driver runs at level 7 while all normal slots are
++			 * level 3 -- deliverable even when the wedge has
++			 * latched the running level (docs/RUNTIME-WEDGE.md).
++			 * Stage 1 (2x timeout) remains a system reset.
++			 */
++			interrupts-extended = <&clic0 24 48 IRQ_TYPE_LEVEL_HIGH>;
+ 			timeout-sec = <30>;
+ 		};
+ 	};
