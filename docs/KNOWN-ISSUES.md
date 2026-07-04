@@ -71,17 +71,23 @@ anywhere in mm/exec/signal.
   ruled out: grep loops, `/bin/true`, and the pure builtin loop all
   wedge; single-shot commands survive.
 
-**Boot-window frequency note (2026-07-04):** during the sleepd bring-up
-session the same wedge (silent stall, MWDT reset ~30 s later, userspace
-`Saved PC`) fired repeatedly ~20–30 s after boot with only login-level
-activity — several times across ~20 boots, far above the historical
-"~1/30 boot freeze" rate, and once with zero interaction at all. The
-deferred-probe window (esp-hosted init + pwm-backlight probes + rcS) is
-evidently a high-concurrency danger zone for the same CLIC-delivery
-bug. Practical consequences: interactive serial work right after login
-is unreliable (do it fast, or idle ~45 s first), and any boot-time
-reliability claim needs a fresh `freezetest.py` campaign against a
-current build.
+**Boot-window frequency note (2026-07-04, transcript-audited):** across
+~20 boots in one session, **3 verified in-stream MWDT resets** hit
+~20–30 s after boot with only login-level activity (single open serial
+session: login, one `ps` command echoed, then the ROM's
+`HP_SYS_HP_WDT_RESET` banner arrived on the same port — the reset
+reason is printed by mask ROM and cannot be faked host-side; an
+RTS/port-open reset reads `rst:0x1 (POWERON)` instead). One further
+incident was a **console-only freeze** (output stopped at ~3.7 s
+uptime, no WDT reset ≥76 s — kernel alive and feeding, so this is the
+older "boot freeze" class, not the wedge). A 5-boot no-interaction
+loop was clean. So: ~3/20 with light interaction vs the historical
+~1/30 — the deferred-probe window (esp-hosted init + pwm-backlight
+probes + rcS) plus a little shell activity is a danger zone for the
+same CLIC-delivery bug, while idle/normal boots look stable. Practical
+consequences: interactive serial work right after login is unreliable
+(do it fast, or idle ~45 s first), and boot-time reliability claims
+need a fresh `freezetest.py` campaign against a current build.
 
 ### What it scales with
 **The presence of concurrent context switches, not fork+exec rate.**
