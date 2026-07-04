@@ -222,10 +222,20 @@ cause, register-level" above.
 ### Workaround for shipping
 - The MWDT stage-0 reset (patch 0028) turns any wedge into a ≤30 s
   auto-reboot; stage 1 remains as a backstop.
-- Don't run sustained fork+exec loops. Real-user workloads (occasional
-  shell commands, sensorpanel idle, wifi-connect) are safe.
+- Don't run sustained fork+exec loops or leave a second CPU-active task
+  running alongside another. Occasional single shell commands and
+  sensorpanel idle are safe.
 - Demos that need continuous child-process churn should be ported to a
   single C process (one fork at startup, then long-running).
+- **`wifi-connect` is a wedge trigger while associating** (verified
+  2026-07-04, shipping kernel): a backgrounded `wpa_supplicant -B` that
+  is scanning/retrying is exactly the "second runnable task" the wedge
+  needs, and against a non-existent AP the badge wedged inside the
+  ~16 s association window every time (Saved PC in userspace, MWDT
+  auto-recovers to a login prompt). A *successful* association (real AP,
+  wpa_supplicant goes near-idle after the 4-way handshake) is untested
+  — needs real credentials on hardware. Treat Wi-Fi as unreliable until
+  that test is run.
 
 ## Boot residual ~1/30 freeze at pwm-c6 line (deferred)
 

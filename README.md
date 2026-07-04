@@ -29,7 +29,8 @@ Boot to BusyBox login takes about 7 seconds. From there:
 - Fn+Esc puts the badge display to sleep (display + keyboard
   backlights off, fb blanked, input grabbed); any key wakes it.
 - BME680 + BMI270 readable via `iio:device*`.
-- Wi-Fi via `wifi-connect <ssid> <psk>`, Bluetooth LE scan via a
+- Wi-Fi via `wifi-connect <ssid> <psk>` (associating currently trips
+  the CLIC wedge below — see KNOWN-ISSUES), Bluetooth LE scan via a
   small custom HCI helper.
 - microSD card readable + VFAT-mountable.
 - fbDOOM playable on the panel (`-mb 6`).
