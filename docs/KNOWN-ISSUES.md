@@ -17,8 +17,11 @@ but pstore isn't NOMMU-safe — see patch 0020.)
 
 **Status (2026-07-04): root-caused to the register level; every
 software recovery tried has failed; shipping mitigation is the MWDT
-stage-0 reset (patch 0028).** The full forensic trail is in
-`docs/RUNTIME-WEDGE.md`; summary below.
+stage-0 reset (patch 0019).** The full forensic trail is in
+`docs/RUNTIME-WEDGE.md`; summary below. (The diagnostic tracer /
+level-7 experiments that established this, formerly patches 0025–0028,
+are concluded and now live in `patches/linux-diagnostics/`, out of the
+shipping series.)
 
 ### Root cause (reframed 2026-07-04 by direct hardware experiment)
 
@@ -83,9 +86,9 @@ v0.9 implementation, not a kernel bug: `arch/riscv/kernel/entry.S`
 restores `mpil = 0` correctly, and ESP-IDF's exit path has identical
 semantics with no visible workaround.
 
-**Mitigation shipped (patch 0028):** MWDT stage 0 = system reset, so a
-wedge self-recovers in ≤30 s. The exit-shim pendency drain (patch
-0029) was tried and falsified on hardware — the trigger is an
+**Mitigation shipped (patch 0019):** MWDT stage 0 = system reset, so a
+wedge self-recovers in ≤30 s. The exit-shim pendency drain (former
+patch 0029) was tried and falsified on hardware — the trigger is an
 interrupt arriving cycle-coincident with the mret, not pre-existing
 pendency (see RUNTIME-WEDGE.md). Software recovery *and* avoidance are
 now both exhausted; the auto-reset is the accepted end-state. (If this
@@ -225,8 +228,8 @@ register-state capture it pointed to found the root cause — see "Root
 cause, register-level" above.
 
 ### Workaround for shipping
-- The MWDT stage-0 reset (patch 0028) turns any wedge into a ≤30 s
-  auto-reboot; stage 1 remains as a backstop.
+- The MWDT stage-0 reset (patch 0019) turns any wedge into a ≤30 s
+  auto-reboot.
 - Don't run sustained fork+exec loops or leave a second CPU-active task
   running alongside another. Occasional single shell commands and
   sensorpanel idle are safe.

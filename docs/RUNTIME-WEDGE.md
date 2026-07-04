@@ -160,7 +160,7 @@ ascending order of cost; each one independently moves the needle.
 > software (raising the CLIC threshold before mret deadlocks: nothing
 > ever runs to lower it). With recovery (0026/0027) and avoidance
 > (0029) both exhausted, the software story is closed: the MWDT stage-0
-> reset (0028) is the accepted shipping end-state. A real fix would have
+> reset (patch 0019) is the accepted shipping end-state. A real fix would have
 > to come from silicon/Espressif, which is out of scope for this
 > project — the auto-reset is good enough for a badge. 0029 was reverted
 > — 16 MMIO reads per user return for a measured-zero benefit (the patch
