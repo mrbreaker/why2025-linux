@@ -322,12 +322,25 @@ INIT_OK. The 8 KB config upload also runs over a ~100 kHz bit-banged
 I²C bus with weak ~45 kΩ internal pull-ups, leaving little timing
 margin.
 
-**Fix shipped (pending hardware verification):** patch 0013 replaces
-the single read with a masked poll (20 ms steps, 500 ms ceiling) and,
-on timeout, soft-resets the chip (CMD 0xB6) and re-uploads, up to 3
-attempts, logging the raw `internal_status` byte per failed attempt.
-To verify: ~50 cold boots via a loop around `tools/bootcap.py`,
-requiring `iio:device1` to enumerate on every cycle; the logged status
-byte on any failing attempt discriminates the underlying cause
-(0x00/0x04 = slow init, 0x02 = corrupted upload, high bits = was the
-over-strict compare).
+**Fix shipped:** patch 0013 replaces the single read with a masked poll
+(20 ms steps, 500 ms ceiling) and, on timeout, soft-resets the chip
+(CMD 0xB6) and re-uploads, up to 3 attempts, logging the raw
+`internal_status` byte per failed attempt.
+
+**Hardware-verified 2026-07-04 (8/8 cold boots):** `iio:device1`
+enumerated as `bmi270` on every boot with correct, calibrated data —
+accel Z ≈ −9.9 m/s² (gravity), gyro live. `INTERNAL_STATUS` never
+failed across the 8 boots, so patch 0013's terminal-failure retry path
+wasn't itself exercised; init was reliable regardless.
+
+Note a benign red herring in dmesg on **every** boot: three
+`Direct firmware load for bmi270-init-data.fw failed with error -2`
+(ENOENT) lines at ~3.42–3.49 s. That's a probe-before-rootfs race —
+the driver's first firmware attempts run before the squashfs root
+mounts (~3.69 s). Patch 0009's `-ENOENT` retry then reloads it once
+the rootfs is up; the successful attempt is silent (the kernel firmware
+loader only logs failures), which is why the sensor ends up fully
+configured despite the scary-looking log. Not worth chasing unless the
+probe order changes; if it ever needs silencing, build the firmware
+into `CONFIG_EXTRA_FIRMWARE` (it's currently only in the rootfs
+overlay).
