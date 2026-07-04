@@ -15,9 +15,12 @@ the patch 0019 MWDT (hardware-confirmed) hard-resets the badge ≤30 s
 after the feed stops. (A ramoops log across that reset was attempted
 but pstore isn't NOMMU-safe — see patch 0020.)
 
-**Status (2026-07-04): root-caused to the register level; every
-software recovery tried has failed; shipping mitigation is the MWDT
-stage-0 reset (patch 0019).** The full forensic trail is in
+**Status (2026-07-05): AVOIDED by patch 0031 — userspace now runs at
+physical M-mode, so the privilege-dropping mrets the latch needs never
+happen. Both churn reproducers run clean (15/12 min vs 25–90 s
+baseline).** The 2026-07-04 root-cause finding stands (register-level
+latch, every software recovery failed); the MWDT stage-0 reset (patch
+0019) remains armed as the backstop. The full forensic trail is in
 `docs/RUNTIME-WEDGE.md`; summary below. (The diagnostic tracer /
 level-7 experiments that established this, formerly patches 0025–0028,
 are concluded and now live in `patches/linux-diagnostics/`, out of the
@@ -147,8 +150,9 @@ The "boot-time reliability claims need a fresh `freezetest.py`
 campaign" this note used to call for **has now been run** — see "Boot
 freeze in the display + backlight bring-up window" below: ~40% of
 first-try boots froze in that window on the 0001–0024 build, far above
-the old ~1/30 estimate (patch 0030 has since cut it to ~27% by
-eliminating one of the two freeze classes).
+the old ~1/30 estimate (patch 0030 cut it to ~27% by eliminating one
+of the two freeze classes; patch 0031 then took the window to zero —
+~97% first-try overall).
 
 ### What it scales with
 **The presence of concurrent context switches, not fork+exec rate.**
@@ -229,27 +233,43 @@ register-state capture it pointed to found the root cause — see "Root
 cause, register-level" above.
 
 ### Workaround for shipping
+
+**Superseded 2026-07-05 by patch 0031 (M-mode userspace): the wedge is
+avoided outright.** The latch only fires on privilege-dropping mrets;
+0031 runs user tasks at physical M-mode so no mret ever drops
+privilege. Both churn reproducers now run clean (15/12 min vs 25–90 s
+baseline wedge times) and the fork+exec restrictions below no longer
+apply. Kept for the record / in case 0031 is ever reverted:
+
 - The MWDT stage-0 reset (patch 0019) turns any wedge into a ≤30 s
-  auto-reboot.
+  auto-reboot (still armed as the backstop).
 - Don't run sustained fork+exec loops or leave a second CPU-active task
   running alongside another. Occasional single shell commands and
   sensorpanel idle are safe.
 - Demos that need continuous child-process churn should be ported to a
   single C process (one fork at startup, then long-running).
-- **Wi-Fi is effectively non-functional: bringing `wlan0` up wedges the
-  badge** (verified 2026-07-04 on the shipping kernel, real AP). The
-  trigger is *not* wpa_supplicant or association — `ip link set wlan0
-  up` on its own, with no further commands and no traffic, wedged the
-  badge within ~30–50 s on every attempt (5+ reproductions, all Saved
-  PC `0x48042f16`, MWDT auto-recovers to a login prompt). Activating the
-  esp-hosted C6 SPI datapath (RX workqueue + periodic SPI + interrupts
-  interleaved with the tick) is in fact a *more* reliable wedge trigger
-  than the busy-loop reproducer. So `wifi-connect` never gets as far as
-  associating: it dies at its `ip link set … up` step. The interface
-  still *enumerates* (probe reads the C6's real MAC, backlight-over-SPI
-  works) — it's only sustained datapath activity that wedges. No
-  software fix (see RUNTIME-WEDGE.md); Wi-Fi is unusable until/unless
-  the underlying CLIC erratum is worked around.
+
+### Wi-Fi: `wlan0 up` hang — reattributed 2026-07-05, NOT this wedge
+
+**Still non-functional, but it's a different (and ordinary) bug.**
+`ip link set wlan0 up` on its own hangs the badge within ~30–50 s on
+every attempt — including on the 0031 M-mode kernel that survives every
+CLIC-wedge reproducer. The discriminating fact was always there: every
+reproduction reports the same Saved PC `0x48042f16`, which is *kernel*
+text — `detach_if_pending` (kernel/time/timer.c). The CPU is stuck in
+an IRQs-off infinite loop walking a **corrupted timer-wheel list**
+under the timer base lock (console dead because IRQs are off; MWDT
+auto-recovers). A delivery latch would leave execution running at
+random PCs, not parked on one list-walk instruction.
+
+Suspects: timer misuse somewhere in the esp-hosted datapath activated
+by ifup — stack timers from `schedule_timeout` in the cmd path, the
+netdev qdisc/TX watchdog, or a freed-while-pending timer (the 0008
+series has known cmd-node lifecycle bugs). Next step: a diagnostic
+build with `CONFIG_DEBUG_LIST=y` + `CONFIG_DEBUG_OBJECTS_TIMERS=y` and
+one `wlan0 up` reproduction — the splat should name the culprit. Until
+then `wifi-connect` still dies at its `ip link set … up` step; the
+interface enumerates fine (real MAC, backlight-over-SPI works).
 
 ## Boot freeze in the display + backlight bring-up window
 
@@ -281,7 +301,8 @@ address real bugs in that path but not the underlying CLIC wedge.
 
 **Practical impact is softer than the freeze rate suggests:** the MWDT
 (patch 0019) auto-resets each frozen boot in ≤30 s and each attempt is
-independent (~60% baseline, ~73% with patch 0030 — see below), so the
+independent (~60% baseline, ~73% with patch 0030, ~97% with patch
+0031 — see below), so the
 badge normally reaches login after 1–2 retries (≈0–60 s of extra
 wait), not bricked. But the first-try number is the honest one, not
 "~97%".
@@ -351,6 +372,16 @@ Remaining untried levers for the caps-window class: delay
 delayed-work pattern as 0030), shift `fbdev_setup_work` past the
 window, or thin early rcS — but per the regdb result, expect
 timing-lottery effects and demand a full 30+-cycle campaign per lever.
+
+**Resolved by patch 0031 (2026-07-05): 29/30 = 96.7% first-try.** The
+levers above became moot: 0031 runs userspace at M-mode, removing the
+privilege-dropping mrets the CLIC latch needs (see RUNTIME-WEDGE.md),
+and the caps-window class went to **0/30** (vs 24/90 on the 0030
+kernel, p = 4×10⁻⁴; overall 29/30 vs 66/90, p = 3×10⁻³). Both
+historical freeze lines are clean. The single residual freeze stopped
+at `mmcblk0: p1` (~3.7 s) — a new, rare class of unknown mechanism;
+the MWDT auto-reset covers it. The number to quote is **~97%
+first-try boot success**.
 
 ### Older notes on the pwm-c6 path (bugs fixed, not the whole story)
 

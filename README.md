@@ -31,22 +31,23 @@ Boot to BusyBox login takes about 7 seconds. From there:
 - BME680 + BMI270 readable via `iio:device*`.
 - Bluetooth LE scan via a small custom HCI helper.
 - Wi-Fi **currently non-functional**: the `wlan0` interface enumerates
-  (C6's real MAC, esp-hosted-NG over SPI), but bringing it up reliably
-  trips the CLIC wedge below within ~30–50 s, so `wifi-connect` can't
-  associate. See [`docs/KNOWN-ISSUES.md`](docs/KNOWN-ISSUES.md).
+  (C6's real MAC, esp-hosted-NG over SPI), but bringing it up hangs the
+  kernel within ~30–50 s. Reattributed 2026-07-05: it is a timer-wheel
+  list corruption in the datapath (an ordinary, debuggable bug), *not*
+  the CLIC erratum. See [`docs/KNOWN-ISSUES.md`](docs/KNOWN-ISSUES.md).
 - microSD card readable + VFAT-mountable.
 - fbDOOM playable on the panel (`-mb 6`).
-- Cold-boot reliability: **~73% first-try boot success** (66/90,
-  2026-07-04, after patch 0030 moved Bluetooth HCI init out of the
-  boot window — that eliminated one of the two boot-freeze classes;
-  the pre-0030 baseline was ~60%, 26/43). The remaining ~27% freeze in
-  the caps-done window — the boot-time face of the CLIC wedge below —
-  and the watchdog auto-resets each freeze, so the badge normally
-  reaches login after 1–2 retries. (The earlier "~97%" figure was not
-  reproducible; see [`docs/KNOWN-ISSUES.md`](docs/KNOWN-ISSUES.md).)
-- Sustained multi-process churn can trip a CLIC interrupt-delivery
-  latch (root-caused to silicon-level behaviour, not fixable in
-  software so far); the watchdog auto-reboots within 30 s
+- Cold-boot reliability: **~97% first-try boot success** (29/30,
+  2026-07-05, after patch 0031 — see next bullet; stepping stones were
+  ~60% baseline and ~73% with patch 0030's Bluetooth-init deferral).
+  The watchdog auto-resets the rare residual freeze, so the badge
+  reaches login after at most one retry.
+- The CLIC interrupt-delivery latch that used to wedge the kernel
+  under multi-process churn (a silicon-level erratum, root-caused at
+  the register level) is **avoided as of patch 0031**: userspace runs
+  at physical M-mode, so the privilege-dropping `mret` the latch needs
+  never executes. Churn reproducers that wedged in under 90 s now run
+  indefinitely; the watchdog stays armed as a backstop
   (see [`docs/RUNTIME-WEDGE.md`](docs/RUNTIME-WEDGE.md)).
 
 ## Screenshots

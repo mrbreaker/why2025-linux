@@ -1,0 +1,64 @@
+--- a/arch/riscv/kernel/entry.S
++++ b/arch/riscv/kernel/entry.S
+@@ -159,17 +159,26 @@
+ 	/*
+ 	 * CLIC v0.9 bidirectional shim (entry side):
+ 	 * mstatus.MPP[12:11] and mstatus.MPIE[7] are hardwired to 0 on this
+-	 * core; the real saved privilege / IE lives in mcause:
+-	 *   mcause[29:28] = MPP, mcause[27] = MPIE.
++	 * core; the real saved IE lives in mcause[27] (MPIE).
+ 	 * Standard Linux C (user_mode(), start_thread(), signal delivery)
+-	 * only looks at pt_regs->status. Reconstruct MPP/MPIE into s1
+-	 * before it gets saved to PT_STATUS so those helpers see a sane
+-	 * RISC-V mstatus view.
++	 * only looks at pt_regs->status, so reconstruct a sane RISC-V
++	 * mstatus view into s1 before it gets saved to PT_STATUS.
++	 *
++	 * The privilege bits are deliberately NOT taken from mcause[29:28]:
++	 * the exit shim runs user tasks at physical M-mode (the CLIC
++	 * erratum latch only ever fires on an mret that drops privilege —
++	 * see ret_from_exception), so hardware MPP reads M for every trap.
++	 * Classify by the entry SCRATCH invariant instead: s5 (the
++	 * pre-trap SCRATCH value) equals the kernel tp exactly when the
++	 * trap came from kernel context. PT_STATUS keeps the *virtual*
++	 * privilege so user_mode() still means "user task".
+ 	 */
+-	srli t0, s4, 28 - 11		/* mcause[29:28] -> t0[12:11] (MPP) */
++	xor  t0, s5, tp
++	snez t0, t0			/* t0 = 1 for a user trap */
++	addi t0, t0, -1			/* 0 for user, -1 for kernel */
+ 	li   t1, (3 << 11)
+-	and  t0, t0, t1
+-	or   s1, s1, t0
++	and  t1, t1, t0			/* PT_STATUS.MPP = M only for kernel */
++	or   s1, s1, t1
+ 	srli t0, s4, 27 - 7		/* mcause[27] -> t0[7] (MPIE) */
+ 	li   t1, (1 << 7)
+ 	and  t0, t0, t1
+@@ -416,10 +425,25 @@
+ 	 * PT_TP holds the pre-trap thread pointer (the entry SCRATCH
+ 	 * invariant); tp is still the kernel tp here (user tp is restored
+ 	 * below), so PT_TP != tp exactly when we are returning to user.
++	 *
++	 * mcause.MPP is forced to M on the same branch, so user tasks run
++	 * at physical M-mode and every mret in the system stays M-to-M.
++	 * Rationale: the CLIC interrupt-delivery latch (the silicon
++	 * erratum behind the silent wedge, docs/RUNTIME-WEDGE.md) has only
++	 * ever been captured on privilege-dropping mrets — kernel-return
++	 * mrets never latch. The core does implement U-mode (hardware
++	 * mcause saves showed MPP=00 while this comment block's older
++	 * siblings assumed "no U-mode"), but nothing here needs it: NOMMU
++	 * userspace can already scribble over kernel RAM, PMP entries are
++	 * unlocked (no M-mode restrictions), and the syscall path has
++	 * handled ecall-from-M (cause 11) since bring-up. The kernel's
++	 * user/kernel bookkeeping is unaffected because the entry side
++	 * derives PT_STATUS's virtual privilege from the SCRATCH
++	 * invariant, not from hardware MPP.
+ 	 */
+ 	REG_L a4, PT_TP(sp)
+ 	beq   a4, tp, .Lesp32p4_keep_mpie	/* PT_TP == tp -> return to kernel */
+-	li    a4, (1 << 27)			/* mcause.MPIE */
++	li    a4, (3 << 28) | (1 << 27)		/* mcause.MPP = M, MPIE = 1 */
+ 	or    a3, a3, a4
+ .Lesp32p4_keep_mpie:
+ 	csrw  CSR_CAUSE, a3

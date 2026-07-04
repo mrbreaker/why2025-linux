@@ -10,7 +10,7 @@ future wedge work.
 
 **They are deliberately outside `patches/linux/`, so Buildroot's
 `BR2_LINUX_KERNEL_PATCH` never applies them.** The shipping series is
-`patches/linux/0001-0024` + `0030` (0025–0029 skipped: these four
+`patches/linux/0001-0024` + `0030`–`0031` (0025–0029 skipped: these four
 diagnostics plus the reverted 0029 avoidance experiment). Keeping the
 tracer in a shipping build is pure cost: patch 0025 does a PSRAM write
 + ROM cache-flush thunk on *every* interrupt dispatch.

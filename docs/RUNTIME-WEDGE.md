@@ -166,6 +166,38 @@ ascending order of cost; each one independently moves the needle.
 > — 16 MMIO reads per user return for a measured-zero benefit (the patch
 > lives in git history at commit 54840c0).
 
+> **RESOLVED BY SIDESTEP (2026-07-05, patch 0031): run userspace at
+> M-mode — no privilege-dropping mrets, no latch.** Every piece of
+> evidence above pointed at the *mret-to-user* transition: all Saved
+> PCs in userspace, the mixed-context capture on an mret-to-user, and
+> thousands of kernel-return mrets that never latched. The one lever
+> never pulled was removing the privilege drop itself. The core does
+> implement U-mode (the port's "no U-mode" assumption was wrong — the
+> exit shim faithfully copied `status.MPP=U` into `mcause` and user
+> tasks really ran at U), but nothing requires it: NOMMU userspace has
+> no memory isolation anyway, PMP entries are unlocked, and the
+> syscall path has handled ecall-from-M since bring-up. Patch 0031
+> forces `mcause.MPP=M` on the exit shim's user-return branch and
+> derives PT_STATUS's virtual privilege from the SCRATCH invariant at
+> entry (hardware MPP now always reads M), so `user_mode()` semantics
+> are unchanged.
+>
+> Hardware results (2026-07-05): the builtin-loop churn reproducer
+> (baseline wedge ~25 s) ran **15 min clean**; `/bin/true` fork+exec
+> churn (baseline 35–90 s) ran **12 min clean**; first-try boot success
+> jumped to **29/30 = 96.7%** (p = 3×10⁻³ vs the 73.3% 0030 kernel,
+> p = 2×10⁻⁴ vs the 60.5% baseline) with both historical freeze lines
+> at zero. Full functional smoke passes. The MWDT (0019) stays armed
+> as the backstop for whatever remains (one 1/30 freeze at an earlier,
+> unrelated line was observed).
+>
+> One casualty of better data: the `wlan0 up` hang is **not this
+> wedge**. It reproduces identically on the M-mode kernel, and its
+> Saved PC is the same *kernel* address every time —
+> `detach_if_pending` (kernel/time/timer.c), i.e. an IRQs-off infinite
+> loop walking a corrupted timer-wheel list, not a delivery latch. See
+> KNOWN-ISSUES "Wi-Fi" for the new investigation state.
+
 ## 1. Remove `idle=poll` from cmdline (cheap, ~5 min)
 
 The current cmdline forces the CPU to spin in `cpu_idle_loop()`
