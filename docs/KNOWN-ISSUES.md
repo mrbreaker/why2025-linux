@@ -329,11 +329,28 @@ and 45 s settle as the baseline): **66/90 = 73.3% first-try success**
   limited by the N=43 baseline), so the honest headline is "~73%
   first-try, one of the two freeze classes eliminated" — not "fixed".
 
-Untried levers for the residual caps-window class: delay
-`driver_deferred_probe_trigger()` out of the events/cfg80211 tail
-(same delayed-work pattern as 0030), shift `fbdev_setup_work` past the
-window, drop `CFG80211_REQUIRE_SIGNED_REGDB` (the RSA verify lands at
-~5.5 s on a 360 MHz core), or thin early rcS.
+**Tried and falsified (2026-07-04): dropping
+`CFG80211_REQUIRE_SIGNED_REGDB`.** 19 of the 24 residual freezes had
+the regulatory-domain callback as their last line, so the regdb
+signature verification (PKCS#7/RSA over the `CONFIG_EXTRA_FIRMWARE`
+regdb, ~5.5 s) was the obvious suspect. Disabling it (via
+`CFG80211_CERTIFICATION_ONUS=y`, which un-gates the `default y`)
+removed the reg work from the window entirely — and made things
+*worse*: 17/30 = 57% first-try (13 freezes, all at the now-last
+pwm-registered line; P(≤17/30 | 73.3%) ≈ 0.03). The fb0 class stayed
+at zero, so 0030's fix held; only the caps-window class grew. Reverted.
+Lesson: the caps-window hazard is **timing-sensitive, not attributable
+to any single work item** — the callback was the last *printk* before
+a quiet stretch, not the trigger, and removing ~100 ms of serial
+kernel work reshuffled the mret race unfavorably. Freeze-line
+adjacency is weak evidence here; treat "last line before silence" as a
+window marker only.
+
+Remaining untried levers for the caps-window class: delay
+`driver_deferred_probe_trigger()` out of the events-worker tail (same
+delayed-work pattern as 0030), shift `fbdev_setup_work` past the
+window, or thin early rcS — but per the regdb result, expect
+timing-lottery effects and demand a full 30+-cycle campaign per lever.
 
 ### Older notes on the pwm-c6 path (bugs fixed, not the whole story)
 
