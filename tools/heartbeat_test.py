@@ -19,7 +19,7 @@ Output: <output_dir>/<run-id>/{transcript.log, summary.txt}
 """
 import os, sys, re, time, serial, datetime
 
-PORT = '/dev/cu.wchusbserial10'
+PORT = os.environ.get('BADGE_PORT', '/dev/cu.wchusbserial10')
 BAUD = 115200
 HEARTBEAT_INTERVAL_S = 30   # shell read -t timeout per iteration
 HEARTBEAT_GAP_S = 90        # tolerate 3× missed beats before declaring wedge

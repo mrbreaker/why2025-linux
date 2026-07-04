@@ -19,9 +19,10 @@ this exists.
 After capture, grep the log for what you care about, e.g.:
     grep -E "esp32_sdio|cmd_init|wlan|read_packet" /tmp/bootcap.log
 """
+import os
 import serial, time, sys
 
-PORT = '/dev/cu.wchusbserial10'
+PORT = os.environ.get('BADGE_PORT', '/dev/cu.wchusbserial10')
 BAUD = 115200
 DUR  = float(sys.argv[1]) if len(sys.argv) > 1 else 14.0
 

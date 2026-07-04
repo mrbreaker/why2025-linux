@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Run ble_scan reset-only first, then if that works try a full scan."""
+import os
 import serial, time, sys, re
 
-PORT = '/dev/cu.wchusbserial10'; BAUD = 115200
+PORT = os.environ.get('BADGE_PORT', '/dev/cu.wchusbserial10'); BAUD = 115200
 s = serial.Serial(PORT, BAUD, timeout=0.2)
 log = open('/tmp/bt_scan.log', 'wb')
 def out(t):

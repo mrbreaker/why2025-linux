@@ -17,7 +17,7 @@ Usage:
 """
 import os, sys, re, time, serial, datetime
 
-PORT = '/dev/cu.wchusbserial10'
+PORT = os.environ.get('BADGE_PORT', '/dev/cu.wchusbserial10')
 BAUD = 115200
 HEARTBEAT_INTERVAL_S = 30
 HEARTBEAT_GAP_S = 90

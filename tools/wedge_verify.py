@@ -37,7 +37,10 @@ def drain(s, transcript, secs):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--port', required=True)
+    ap.add_argument('--port',
+                    default=os.environ.get('BADGE_PORT', '/dev/cu.wchusbserial10'),
+                    help='serial port (default: $BADGE_PORT or '
+                         '/dev/cu.wchusbserial10)')
     ap.add_argument('--workload', default=DEFAULT_WORKLOAD)
     ap.add_argument('--max-min', type=float, default=4.0)
     ap.add_argument('--isolated', action='store_true',

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
+import os
 import serial, time, sys
-PORT = '/dev/cu.wchusbserial10'
+PORT = os.environ.get('BADGE_PORT', '/dev/cu.wchusbserial10')
 s = serial.Serial(PORT, 115200, timeout=0.2)
 def out(t): sys.stdout.buffer.write(t); sys.stdout.flush()
 def slow_send(line, d=0.005):

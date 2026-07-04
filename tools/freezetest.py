@@ -26,7 +26,7 @@ errors (CH340 dropouts — gotcha #7) the cycle is logged and we move on.
 """
 import os, re, sys, time, serial, datetime
 
-PORT = '/dev/cu.wchusbserial10'
+PORT = os.environ.get('BADGE_PORT', '/dev/cu.wchusbserial10')
 BAUD = 115200
 
 LOGIN_RE = re.compile(rb'(why2025 login:|buildroot login:|\nlogin:)', re.IGNORECASE)

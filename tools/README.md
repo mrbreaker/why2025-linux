@@ -1,9 +1,19 @@
 # tools/
 
 Pyserial test harnesses run from the macOS host. The badge appears as
-`/dev/cu.wchusbserial10` (CH340 on the side USB-C). All scripts pulse
-RTS to hard-reset the badge before each run, so they require the
-`tio` console to be **closed** beforehand (it exclusive-locks the port).
+a CH340 on the side USB-C — often `/dev/cu.wchusbserial110`, but the
+exact node varies per machine and cable. Every tool takes its port
+from the `BADGE_PORT` environment variable, falling back to
+`/dev/cu.wchusbserial10` if unset, so set it once per shell:
+
+```sh
+export BADGE_PORT=/dev/cu.wchusbserial110   # check `ls /dev/cu.*`
+```
+
+(`wedge_verify.py` also accepts `--port`, which overrides the env var.)
+All scripts pulse RTS to hard-reset the badge before each run, so they
+require the `tio` console to be **closed** beforehand (it
+exclusive-locks the port).
 
 ## Reliability harnesses
 
@@ -14,7 +24,7 @@ RTS to hard-reset the badge before each run, so they require the
 | `loadtest.py [max_min=30] [output_dir=/tmp/loadtest]` | Heavy-load uptime: boot → detach fbcon → launch sensorpanel → run instrumented heartbeat that emits `/proc/buddyinfo` and key `/proc/meminfo` fields each cycle. Reproduces the runtime kernel wedge. |
 | `greptest.py [max_min=30] [outdir=/tmp/greptest]` | Same as loadtest but workload is `(while :; do grep -rl DOESNOTEXIST / >/dev/null; sleep 1; done)`. Reproduces the runtime kernel wedge faster than sensorpanel. |
 | `grepbisect.py [outdir=/tmp/grepbisect]` | Bisect: which subtree, when grepped continuously, triggers the wedge. Edit the `TARGETS` list to scope further. |
-| `wedge_verify.py --port PORT [--workload W] [--max-min N] [--isolated]` | Host-sleep-immune wedge reproducer / fix-verifier. Boots, marker-syncs login, launches a workload, and classifies a wedge on the badge ROM's `HP_SYS_HP_WDT_RESET` banner (not host wall-clock — a laptop sleep can't fake a hardware watchdog reset). Default workload is the pure builtin loop `(while :; do :; done) &`; `--isolated` runs it with no other activity (does not wedge — see `docs/RUNTIME-WEDGE.md`). Reports the ROM `Saved PC`. This is the harness that reframed the wedge in July 2026. |
+| `wedge_verify.py [--port PORT] [--workload W] [--max-min N] [--isolated]` | Host-sleep-immune wedge reproducer / fix-verifier. Boots, marker-syncs login, launches a workload, and classifies a wedge on the badge ROM's `HP_SYS_HP_WDT_RESET` banner (not host wall-clock — a laptop sleep can't fake a hardware watchdog reset). Default workload is the pure builtin loop `(while :; do :; done) &`; `--isolated` runs it with no other activity (does not wedge — see `docs/RUNTIME-WEDGE.md`). Reports the ROM `Saved PC`. This is the harness that reframed the wedge in July 2026. |
 
 ## One-shot diagnostics
 

@@ -5,9 +5,10 @@
 Slow-typed login: each byte sent with a delay so we don't race kernel
 printk that's still streaming to ttyS0 around the login moment.
 """
+import os
 import serial, time, sys, re
 
-PORT = '/dev/cu.wchusbserial10'
+PORT = os.environ.get('BADGE_PORT', '/dev/cu.wchusbserial10')
 BAUD = 115200
 SSID = "Radio Grandma"
 PSK  = "StormMakerWaspAhead4Tart"
