@@ -29,6 +29,9 @@ Boot to BusyBox login takes about 7 seconds. From there:
 - Fn+Esc puts the badge display to sleep (display + keyboard
   backlights off, fb blanked, input grabbed); any key wakes it.
 - BME680 + BMI270 readable via `iio:device*`.
+- Frontpanel WS2812B RGB LEDs via
+  `/sys/class/leds/rgb:indicator-{0..3}/` (`brightness` +
+  `multi_intensity`).
 - Bluetooth LE scan via a small custom HCI helper.
 - Wi-Fi **currently non-functional**: the `wlan0` interface enumerates
   (C6's real MAC, esp-hosted-NG over SPI), but bringing it up hangs the

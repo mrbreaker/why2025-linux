@@ -1,0 +1,272 @@
+--- /dev/null
++++ b/drivers/leds/rgb/leds-ws2812b-gpio.c
+@@ -0,0 +1,220 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * WS2812B LED chain bit-banged on an ESP32-P4 GPIO — WHY2025 badge.
++ *
++ * The badge frontpanel carries four chained WS2812B RGB LEDs whose data
++ * input is HP GPIO 4, routed through the pogo-pin pads (the carrier's
++ * own six WS2812B footprints are unpopulated — schematic sheet 1). No
++ * peripheral on this port can generate the 800 kHz self-clocked stream:
++ * the P4's RMT engine has no Linux driver and the hardware SPI hosts
++ * are unused by this kernel. So the stream is bit-banged with
++ * interrupts disabled — a full 4-LED refresh is 96 bits ≈ 130 µs of
++ * irqs-off, and refreshes only happen on sysfs writes.
++ *
++ * The hot loop writes the GPIO controller's OUT_W1TS/W1TC registers
++ * directly (own mapping of the same page gpio-esp32p4 uses): one MMIO
++ * store per edge, no gpiolib call overhead. The pin is still requested
++ * through gpiolib so gpio-esp32p4 programs the IO_MUX and the pin shows
++ * as claimed in /sys/kernel/debug/gpio. gpio-esp32p4 pins global GPIO
++ * numbers to hardware pin numbers, so desc_to_gpio() gives the register
++ * bit index directly.
++ *
++ * Timing (WS2812B datasheet, ±150 ns windows): T0H 220–550 ns, T1H
++ * 650–950 ns; the low periods are elastic short of the >280 µs frame
++ * latch. The ndelay() targets below sit low in each window to leave
++ * room for call + MMIO overhead at 360 MHz. If colors come out wrong
++ * with bits reading as 1s (e.g. everything whitish), T0H is running
++ * long — lower ESP32P4_WS_T0H_NS first.
++ */
++
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/io.h>
++#include <linux/led-class-multicolor.h>
++#include <linux/leds.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++
++#define ESP32P4_GPIO_PHYS		0x500e0000
++#define ESP32P4_GPIO_SIZE		0x100
++#define ESP32P4_GPIO_OUT_W1TS(bank)	((bank) ? 0x14 : 0x08)
++#define ESP32P4_GPIO_OUT_W1TC(bank)	((bank) ? 0x18 : 0x0c)
++
++#define ESP32P4_WS_T0H_NS		250
++#define ESP32P4_WS_T0L_NS		750
++#define ESP32P4_WS_T1H_NS		700
++#define ESP32P4_WS_T1L_NS		400
++#define ESP32P4_WS_LATCH_US		300
++
++#define WS2812B_MAX_LEDS		16
++#define WS2812B_NUM_COLORS		3
++
++struct ws2812b_chain;
++
++struct ws2812b_led {
++	struct led_classdev_mc	mc;
++	struct mc_subled	subled[WS2812B_NUM_COLORS];
++	struct ws2812b_chain	*chain;
++	u8			idx;
++};
++
++struct ws2812b_chain {
++	struct device		*dev;
++	struct gpio_desc	*data;
++	void __iomem		*w1ts;
++	void __iomem		*w1tc;
++	u32			mask;
++	struct mutex		lock;	/* serializes grb[] updates + transmits */
++	u32			num_leds;
++	u8			grb[WS2812B_MAX_LEDS * WS2812B_NUM_COLORS];
++	struct ws2812b_led	leds[] __counted_by(num_leds);
++};
++
++static void ws2812b_xmit(struct ws2812b_chain *chain)
++{
++	unsigned long flags;
++	int i, bit;
++
++	local_irq_save(flags);
++	for (i = 0; i < chain->num_leds * WS2812B_NUM_COLORS; i++) {
++		u8 byte = chain->grb[i];
++
++		for (bit = 7; bit >= 0; bit--) {
++			writel_relaxed(chain->mask, chain->w1ts);
++			if (byte & BIT(bit)) {
++				ndelay(ESP32P4_WS_T1H_NS);
++				writel_relaxed(chain->mask, chain->w1tc);
++				ndelay(ESP32P4_WS_T1L_NS);
++			} else {
++				ndelay(ESP32P4_WS_T0H_NS);
++				writel_relaxed(chain->mask, chain->w1tc);
++				ndelay(ESP32P4_WS_T0L_NS);
++			}
++		}
++	}
++	local_irq_restore(flags);
++
++	/* Hold the line low for the >280 µs frame latch. */
++	usleep_range(ESP32P4_WS_LATCH_US, 2 * ESP32P4_WS_LATCH_US);
++}
++
++static int ws2812b_set(struct led_classdev *cdev, enum led_brightness value)
++{
++	struct led_classdev_mc *mc = lcdev_to_mccdev(cdev);
++	struct ws2812b_led *led = container_of(mc, struct ws2812b_led, mc);
++	struct ws2812b_chain *chain = led->chain;
++	u8 *grb = &chain->grb[led->idx * WS2812B_NUM_COLORS];
++
++	led_mc_calc_color_components(mc, value);
++
++	mutex_lock(&chain->lock);
++	/* WS2812B wire order is G-R-B */
++	grb[0] = mc->subled_info[1].brightness;
++	grb[1] = mc->subled_info[0].brightness;
++	grb[2] = mc->subled_info[2].brightness;
++	ws2812b_xmit(chain);
++	mutex_unlock(&chain->lock);
++
++	return 0;
++}
++
++static int ws2812b_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct ws2812b_chain *chain;
++	void __iomem *gpio_regs;
++	u32 num_leds = 4;
++	int pin, bank, ret;
++	u32 i;
++
++	of_property_read_u32(dev->of_node, "num-leds", &num_leds);
++	if (!num_leds || num_leds > WS2812B_MAX_LEDS)
++		return dev_err_probe(dev, -EINVAL, "num-leds out of range\n");
++
++	chain = devm_kzalloc(dev, struct_size(chain, leds, num_leds),
++			     GFP_KERNEL);
++	if (!chain)
++		return -ENOMEM;
++	chain->num_leds = num_leds;
++	chain->dev = dev;
++	mutex_init(&chain->lock);
++
++	chain->data = devm_gpiod_get(dev, "data", GPIOD_OUT_LOW);
++	if (IS_ERR(chain->data))
++		return dev_err_probe(dev, PTR_ERR(chain->data),
++				     "failed to get data-gpios\n");
++
++	pin = desc_to_gpio(chain->data);
++	bank = pin / 32;
++	chain->mask = BIT(pin % 32);
++
++	gpio_regs = devm_ioremap(dev, ESP32P4_GPIO_PHYS, ESP32P4_GPIO_SIZE);
++	if (!gpio_regs)
++		return -ENOMEM;
++	chain->w1ts = gpio_regs + ESP32P4_GPIO_OUT_W1TS(bank);
++	chain->w1tc = gpio_regs + ESP32P4_GPIO_OUT_W1TC(bank);
++
++	for (i = 0; i < num_leds; i++) {
++		struct ws2812b_led *led = &chain->leds[i];
++		struct led_classdev *cdev = &led->mc.led_cdev;
++
++		led->chain = chain;
++		led->idx = i;
++		led->subled[0].color_index = LED_COLOR_ID_RED;
++		led->subled[1].color_index = LED_COLOR_ID_GREEN;
++		led->subled[2].color_index = LED_COLOR_ID_BLUE;
++		/*
++		 * Full intensity on all components by default so a plain
++		 * `echo N > brightness` lights white; multi_intensity then
++		 * picks the color.
++		 */
++		led->subled[0].intensity = 255;
++		led->subled[1].intensity = 255;
++		led->subled[2].intensity = 255;
++		led->mc.subled_info = led->subled;
++		led->mc.num_colors = WS2812B_NUM_COLORS;
++
++		cdev->name = devm_kasprintf(dev, GFP_KERNEL,
++					    "rgb:indicator-%u", i);
++		if (!cdev->name)
++			return -ENOMEM;
++		cdev->max_brightness = 255;
++		cdev->brightness_set_blocking = ws2812b_set;
++		cdev->color = LED_COLOR_ID_RGB;
++
++		ret = devm_led_classdev_multicolor_register(dev, &led->mc);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "failed to register LED %u\n", i);
++	}
++
++	/* Power-up chain state is undefined; latch all-off once. */
++	mutex_lock(&chain->lock);
++	ws2812b_xmit(chain);
++	mutex_unlock(&chain->lock);
++
++	platform_set_drvdata(pdev, chain);
++	dev_info(dev, "%u-LED WS2812B chain on GPIO %d\n", num_leds, pin);
++	return 0;
++}
++
++static const struct of_device_id ws2812b_of_match[] = {
++	{ .compatible = "why2025,ws2812b-gpio" },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, ws2812b_of_match);
++
++static struct platform_driver ws2812b_driver = {
++	.probe = ws2812b_probe,
++	.driver = {
++		.name = "leds-ws2812b-gpio",
++		.of_match_table = ws2812b_of_match,
++	},
++};
++module_platform_driver(ws2812b_driver);
++
++MODULE_AUTHOR("WHY2025 Linux port");
++MODULE_DESCRIPTION("Bit-banged WS2812B chain on ESP32-P4 GPIO");
++MODULE_LICENSE("GPL");
+--- a/drivers/leds/rgb/Kconfig
++++ b/drivers/leds/rgb/Kconfig
+@@ -75,4 +75,17 @@
+ 	  This driver can also be built as a module. If so, the module
+ 	  will be called "leds-mt6370-rgb".
+ 
++config LEDS_WS2812B_GPIO
++	tristate "WS2812B chain bit-banged on an ESP32-P4 GPIO (WHY2025 badge)"
++	depends on SOC_ESP32P4 || COMPILE_TEST
++	depends on GPIOLIB && OF
++	help
++	  This option enables support for a chain of WS2812B addressable
++	  RGB LEDs driven by bit-banging an ESP32-P4 GPIO, as wired on the
++	  WHY2025 badge frontpanel (four LEDs on HP GPIO 4). Each LED in
++	  the chain is exposed as a multicolor LED class device.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called "leds-ws2812b-gpio".
++
+ endif # LEDS_CLASS_MULTICOLOR
+--- a/drivers/leds/rgb/Makefile
++++ b/drivers/leds/rgb/Makefile
+@@ -6,3 +6,4 @@
+ obj-$(CONFIG_LEDS_PWM_MULTICOLOR)	+= leds-pwm-multicolor.o
+ obj-$(CONFIG_LEDS_QCOM_LPG)		+= leds-qcom-lpg.o
+ obj-$(CONFIG_LEDS_MT6370_RGB)		+= leds-mt6370-rgb.o
++obj-$(CONFIG_LEDS_WS2812B_GPIO)		+= leds-ws2812b-gpio.o
+--- a/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts
++++ b/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts
+@@ -284,6 +284,19 @@
+ 		num-interpolated-steps = <255>;
+ 		default-brightness-level = <25>;
+ 	};
++
++	/*
++	 * Frontpanel WS2812B chain: four LEDs, data on HP GPIO 4 through
++	 * the pogo-pin pads. The carrier's own six WS2812B footprints are
++	 * unpopulated (crossed out on schematic sheet 1), so only the
++	 * frontpanel LEDs are in the chain. GPIO 4 is also broken out on
++	 * the addon connector — nothing else drives it.
++	 */
++	leds-ws2812b {
++		compatible = "why2025,ws2812b-gpio";
++		data-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
++		num-leds = <4>;
++	};
+ };
+ 
+ &soc {
