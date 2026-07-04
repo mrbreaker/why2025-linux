@@ -29,6 +29,21 @@ git clone -b 2025.02.15 https://gitlab.com/buildroot.org/buildroot
 stay on its point releases rather than the quarterly 2025.05+/2026.xx
 releases, which churn toolchain defaults.
 
+Then patch the fresh clone — upstream Buildroot refuses to offer
+wpa_supplicant on NOMMU, and without this `make olddefconfig` silently
+drops it and the image ships without Wi-Fi:
+
+```bash
+for p in patches/buildroot/buildroot-tree/00[0-9][0-9]-*.patch; do
+    patch -p1 -d buildroot -i "$p"
+done
+```
+
+Re-apply after any re-clone or Buildroot version bump (this step was
+once a local-only edit and got lost in exactly such a bump). The
+matching wpa_supplicant *source* fix rides along automatically via
+`BR2_GLOBAL_PATCH_DIR` → `patches/buildroot/global-patches/`.
+
 Buildroot's `.config` and `CONFIG_EXTRA_FIRMWARE_DIR` only accept
 absolute paths, so `configs/why2025_defconfig` and
 `patches/linux/kernel.config` ship with the token `@WHY2025_LINUX@`

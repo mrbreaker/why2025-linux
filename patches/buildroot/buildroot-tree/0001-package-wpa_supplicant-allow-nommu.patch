@@ -1,0 +1,29 @@
+package/wpa_supplicant: allow selection on NOMMU targets
+
+Upstream gates the package on BR2_USE_MMU because of a single fork()
+call site (os_exec(), used only for wpa_cli action scripts). That call
+site is converted to vfork()+execv() by the source patch this repo
+applies via BR2_GLOBAL_PATCH_DIR (patches/buildroot/global-patches/
+wpa_supplicant/), and uClibc-ng provides a clone()-based daemon() on
+NOMMU, so the daemon mode wpa_supplicant actually relies on works.
+
+Without this, `make olddefconfig` silently drops
+BR2_PACKAGE_WPA_SUPPLICANT=y from the defconfig and the rootfs ships
+without /usr/sbin/wpa_supplicant (wifi-connect then fails with
+"can't execute 'wpa_supplicant'"). This exact edit previously lived
+only as an uncommitted change in the local 2025.02.4 Buildroot tree
+and was lost in the 2025.02.15 bump - hence this file.
+
+Apply to the Buildroot checkout after cloning (idempotent per clone):
+
+    patch -p1 -d buildroot -i patches/buildroot/buildroot-tree/0001-package-wpa_supplicant-allow-nommu.patch
+
+--- a/package/wpa_supplicant/Config.in
++++ b/package/wpa_supplicant/Config.in
+@@ -1,6 +1,5 @@
+ menuconfig BR2_PACKAGE_WPA_SUPPLICANT
+ 	bool "wpa_supplicant"
+-	depends on BR2_USE_MMU # fork()
+ 	select BR2_PACKAGE_LIBOPENSSL_ENABLE_DES if BR2_PACKAGE_LIBOPENSSL
+ 	select BR2_PACKAGE_LIBOPENSSL_ENABLE_MD4 if BR2_PACKAGE_LIBOPENSSL
+ 	help

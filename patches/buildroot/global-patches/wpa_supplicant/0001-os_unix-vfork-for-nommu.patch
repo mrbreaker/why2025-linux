@@ -1,0 +1,114 @@
+os_unix: convert os_exec() from fork() to vfork()+execv() for NOMMU
+
+uClibc-ng on a NOMMU target (riscv32, ARCH_USE_MMU unset) provides no
+fork() symbol at all, so wpa_supplicant and wpa_cli fail to link even
+though nothing on this badge ever calls os_exec() (it only backs
+wpa_cli action scripts). Convert it to the standard NOMMU idiom:
+prepare argv in the parent, then vfork()+execv(), with _exit() on the
+exec-failure path (exit() would flush the suspended parent's stdio).
+daemon() needs no equivalent treatment - uClibc-ng ships a clone()-
+based NOMMU implementation, which is what makes `wpa_supplicant -B`
+work at runtime.
+
+Applied by Buildroot via BR2_GLOBAL_PATCH_DIR (see
+configs/why2025_defconfig). Companion change: the Buildroot-tree patch
+in patches/buildroot/buildroot-tree/ drops the package's
+`depends on BR2_USE_MMU`, which exists solely because of this call
+site.
+
+--- a/src/utils/os_unix.c
++++ b/src/utils/os_unix.c
+@@ -820,49 +820,63 @@
+ 
+ int os_exec(const char *program, const char *arg, int wait_completion)
+ {
++	const int MAX_ARG = 30;
++	char *_program, *_arg, *pos;
++	char *argv[MAX_ARG + 1];
+ 	pid_t pid;
+ 	int pid_status;
++	int i;
+ 
+-	pid = fork();
+-	if (pid < 0) {
+-		perror("fork");
++	/*
++	 * NOMMU targets have no fork(); use the vfork()+execv() idiom
++	 * instead. vfork() suspends the parent until the child execs or
++	 * exits, so everything the child needs must be prepared here,
++	 * before the shared-address-space window opens.
++	 */
++	_program = os_strdup(program);
++	_arg = os_strdup(arg);
++	if (!_program || !_arg) {
++		os_free(_program);
++		os_free(_arg);
+ 		return -1;
+ 	}
+ 
+-	if (pid == 0) {
+-		/* run the external command in the child process */
+-		const int MAX_ARG = 30;
+-		char *_program, *_arg, *pos;
+-		char *argv[MAX_ARG + 1];
+-		int i;
++	argv[0] = _program;
+ 
+-		_program = os_strdup(program);
+-		_arg = os_strdup(arg);
+-
+-		argv[0] = _program;
++	i = 1;
++	pos = _arg;
++	while (i < MAX_ARG && pos && *pos) {
++		while (*pos == ' ')
++			pos++;
++		if (*pos == '\0')
++			break;
++		argv[i++] = pos;
++		pos = os_strchr(pos, ' ');
++		if (pos)
++			*pos++ = '\0';
++	}
++	argv[i] = NULL;
+ 
+-		i = 1;
+-		pos = _arg;
+-		while (i < MAX_ARG && pos && *pos) {
+-			while (*pos == ' ')
+-				pos++;
+-			if (*pos == '\0')
+-				break;
+-			argv[i++] = pos;
+-			pos = os_strchr(pos, ' ');
+-			if (pos)
+-				*pos++ = '\0';
+-		}
+-		argv[i] = NULL;
+-
+-		execv(program, argv);
+-		perror("execv");
++	pid = vfork();
++	if (pid < 0) {
++		perror("vfork");
+ 		os_free(_program);
+ 		os_free(_arg);
+-		exit(0);
+ 		return -1;
+ 	}
+ 
++	if (pid == 0) {
++		/*
++		 * Child, sharing the parent's address space: nothing but
++		 * exec or _exit() is safe here.
++		 */
++		execv(program, argv);
++		_exit(127);
++	}
++
++	os_free(_program);
++	os_free(_arg);
++
+ 	if (wait_completion) {
+ 		/* wait for the child process to complete in the parent */
+ 		waitpid(pid, &pid_status, 0);

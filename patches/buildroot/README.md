@@ -17,6 +17,17 @@ overlay-src/    C sources for the FLAT userspace binaries. Build with
                 outputs land in overlay/usr/bin/ and get rsync'd into
                 the target.
 
+buildroot-tree/ Patches applied to the Buildroot checkout itself
+                (`patch -p1 -d buildroot`) right after cloning — see
+                BUILDING.md "Getting the source". Currently: drop
+                wpa_supplicant's `depends on BR2_USE_MMU` so olddefconfig
+                stops silently discarding it.
+
+global-patches/ BR2_GLOBAL_PATCH_DIR tree — per-package source patches
+                Buildroot applies on top of its own. Currently:
+                wpa_supplicant os_exec() fork()→vfork() so it links
+                against the fork-less NOMMU uClibc-ng.
+
 post-build.sh   Buildroot post-build hook (e.g. chmod init scripts).
 
 post-image.sh   Buildroot post-image hook (BR2_ROOTFS_POST_IMAGE_SCRIPT).
@@ -76,7 +87,10 @@ power-of-two and allocates as one contiguous block from the buddy heap.
 On this 32 MB PSRAM build:
 
   - busybox is trimmed to 459 KB → order-7 (512 KB) block.
-  - wpa_supplicant trimmed to 868 KB → order-8 (1 MB) block.
+  - wpa_supplicant is ~999 KB all-in (text+data+bss+stack per flthdr,
+    with BR2_PACKAGE_WPA_SUPPLICANT_AP_SUPPORT off — AP+P2P alone are
+    ~760 KB) → order-8 (1 MB) block, with only ~48 KB of headroom.
+    Check `flthdr` after any wpa_supplicant or toolchain change.
   - sensorpanel ~62 KB → order-7 fork allocation.
 
 If you add a new utility, audit its size and round up. Anything over
