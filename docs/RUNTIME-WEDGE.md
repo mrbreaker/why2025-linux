@@ -69,6 +69,57 @@ ascending order of cost; each one independently moves the needle.
 > in one reserved region.) A `tools/` harness (`wedge_verify.py`) and the
 > VM build+flash loop are already wired up for fast iteration.
 
+> **Update 2026-07-04 (SMOKING GUN — patch 0025 wedge tracer).** The
+> register-state capture proposed above is implemented (patch 0025:
+> 128 KB `no-map` PSRAM carveout at `0x495e0000`; per-interrupt records
+> of the RAW `mcause` CSR — which still holds `mpil[23:16]`, unlike the
+> masked copy in pt_regs — plus `mepc`/`mintstatus`/`mstatus`, and
+> per-tick snapshots of the memory-mapped CLIC threshold, slot 17/18
+> byte quads and SYSTIMER alarm state; previous boot dumped to dmesg at
+> early_initcall). Prerequisite discovered on the way: the boot shim ran
+> a whole-PSRAM memtest every boot, wiping any persistent region —
+> `CONFIG_SPIRAM_MEMTEST=n` now set in `linux-native`. PSRAM persistence
+> across the MWDT reset is confirmed working.
+>
+> **First capture across a live wedge:** the last ~30 delivered
+> interrupts are perfectly normal (timer ticks into kernel and into the
+> busy-loop userspace, `mpil=0` throughout; per-tick threshold constant
+> `0x1f`, slots enabled/level/ctl `0xFF`, alarm armed). Then the FINAL
+> record ever delivered is:
+>
+>     cause=88ff0011  epc=0x497ce094 (userspace)  mstat MPP=U
+>
+> — a timer interrupt taken with **`mcause.mpil = 0xFF`**: the hardware
+> says the core was running *userspace* at interrupt level 255, a state
+> the exit shim makes impossible (it writes `mpil=0` before every
+> `mret`). After that handler returned, no interrupt was ever delivered
+> again; the MWDT reset ~30 s later. So: not the threshold register,
+> not slot config, not the timer — the CLIC/core's *internal running
+> level* gets stuck at 0xFF. Since every slot is level 0xFF and CLIC
+> delivers only on `level > mil`, 255 ≯ 255 blocks everything forever.
+>
+> **Working theory:** an interrupt that races the preceding `mret`
+> (pending back-to-back — which is why a second runnable task is
+> needed) is accepted with a *mixed* context save: post-`mret`
+> privilege/EPC (user) but pre-`mret` level (`0xFF`) — and the
+> internal level-tracking never pops afterwards. ESP-IDF's exit path
+> restores the identical `mcause.mpil` semantics and carries no visible
+> workaround, so this smells like silicon/CLIC-v0.9 behaviour our
+> higher interrupt+context-switch rate tickles far more often.
+>
+> **Fix directions (next steps):**
+>  1. *Detect-and-study:* at dispatch, a non-nested entry with
+>     `mpil != 0` is the anomaly one `mret` before death — log it and
+>     experiment with active recovery (threshold pulse, slot
+>     mask/unmask, etc.).
+>  2. *Self-healing watchdog (architectural):* run all normal slots at
+>     a mid level (e.g. INTCTL `0x7F` = level 3) and rewire the MWDT
+>     stage 0 as a level-7 *interrupt* (stage 1 stays reset). A stuck
+>     `mil=3` can then never block the level-7 dog; its handler repairs
+>     the level via its own `mret` and feeds — converting the fatal
+>     wedge into a ~2 s hiccup, with reset only as the second-stage
+>     backstop.
+
 ## 1. Remove `idle=poll` from cmdline (cheap, ~5 min)
 
 The current cmdline forces the CPU to spin in `cpu_idle_loop()`

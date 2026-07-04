@@ -1,0 +1,396 @@
+--- /dev/null
++++ b/drivers/misc/esp32p4_wedge_trace.c
+@@ -0,0 +1,267 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * ESP32-P4 wedge tracer: interrupt-delivery forensics that survive the
++ * MWDT reset.
++ *
++ * The silent wedge (docs/KNOWN-ISSUES.md, docs/RUNTIME-WEDGE.md) is a
++ * CLIC-level delivery failure: under concurrent load the core stops
++ * taking *any* interrupt while running userspace; the kernel-fed MWDT
++ * (patch 0019) then hard-resets the chip ~30 s later. Nothing traps, so
++ * nothing can be printed at wedge time — but the HEX PSRAM's contents
++ * survive a system reset (it self-refreshes while powered; the boot
++ * shim's whole-PSRAM memtest that used to wipe it at every boot is now
++ * disabled). So: record interrupt-delivery state into a small no-map
++ * PSRAM carveout on every interrupt and every timer tick, and dump the
++ * previous boot's records from the next boot's initcall. The dump after
++ * a wedge-triggered reboot shows the last successfully-delivered
++ * interrupts and the delivery-relevant hardware state at the final
++ * serviced tick.
++ *
++ * What gets recorded and why:
++ *
++ *  - Per interrupt (hooked in riscv_intc_irq): the RAW mcause CSR --
++ *    entry.S stores a masked copy in pt_regs, but the live CSR still
++ *    holds mpil[23:16], the interrupt level the core was running at
++ *    when this interrupt fired. mpil != 0 with a userspace EPC is the
++ *    smoking gun for the "mil stuck above 0" theory. Plus mepc (was the
++ *    core in user or kernel?), mintstatus (CSR 0x346 on this
++ *    pre-standard CLIC; mil in bits [31:24]), and pt_regs->status.
++ *
++ *  - Per tick (hooked in the SYSTIMER ISR): the memory-mapped CLIC
++ *    threshold register (0x20800008 -- on this CLIC the runtime
++ *    threshold is MMIO, not a CSR, so a stray kernel write could
++ *    silently raise it and block everything), the full slot-17/18
++ *    byte quads (INTIP/INTIE/INTATTR/INTCTL), and the SYSTIMER alarm
++ *    state (armed? target vs count? interrupt pending at the source?).
++ *
++ * All records are pushed through the ROM ranged cache-writeback thunk
++ * so they reach PSRAM before any reset (the region is cached like all
++ * PSRAM; a dirty line lost in L1/L2 across the reset would silently
++ * hide exactly the records we care about).
++ *
++ * The carveout is the 128 KB at 0x495e0000 reserved (no-map) by the
++ * DTS node wedge-trace@495e0000 -- keep WT_BASE in sync with it.
++ */
++
++#define pr_fmt(fmt) "wedge_trace: " fmt
++
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/irqflags.h>
++#include <linux/kernel.h>
++#include <linux/sched.h>
++#include <asm/csr.h>
++#include <asm/ptrace.h>
++
++#include <linux/esp32p4_wedge_trace.h>
++
++#define WT_BASE			0x495e0000UL	/* == DTS wedge-trace@ node */
++#define WT_MAGIC		0x31525457	/* "WTR1" */
++#define WT_NREC			1024		/* power of two */
++#define WT_NTICK		4		/* power of two */
++#define WT_DUMP_RECS		32
++
++#define CSR_MINTSTATUS		0x346	/* pre-standard CLIC (ESP-IDF) */
++
++#define CLIC_CTRL_BASE		0x20800000UL
++#define CLIC_INT_THRESH_OFF	0x8	/* threshold in bits [31:24] */
++#define CLIC_SLOTS_BASE		0x20801000UL
++#define CLIC_SLOT_SYSTIMER	17
++#define CLIC_SLOT_UART0		18
++
++#define ST_BASE			0x500e2000UL
++#define ST_CONF			0x00
++#define ST_UNIT0_OP		0x04
++#define ST_TARGET0_HI		0x1C
++#define ST_TARGET0_LO		0x20
++#define ST_UNIT0_VAL_HI		0x40
++#define ST_UNIT0_VAL_LO		0x44
++#define ST_INT_ENA		0x64
++#define ST_INT_RAW		0x68
++#define ST_INT_ST		0x70
++#define ST_UNIT0_OP_UPDATE	BIT(30)
++#define ST_UNIT0_OP_VALID	BIT(29)
++
++struct wt_header {
++	u32 magic;
++	u32 boot_count;
++	u32 ring_idx;		/* monotonic; slot = idx & (WT_NREC - 1) */
++	u32 tick_count;		/* monotonic; slot = cnt & (WT_NTICK - 1) */
++};
++
++struct wt_tick {
++	u32 tick_count;
++	u32 jiffies_lo;
++	u32 mintstatus;
++	u32 clic_thresh;
++	u32 st_conf;
++	u32 st_int_ena;
++	u32 st_int_raw;
++	u32 st_int_st;
++	u32 target_hi;
++	u32 target_lo;
++	u32 count_hi;
++	u32 count_lo;
++	u32 clic17;		/* INTIP | INTIE<<8 | INTATTR<<16 | INTCTL<<24 */
++	u32 clic18;
++	u32 pad[2];
++};
++
++struct wt_rec {
++	u32 mcause;		/* raw CSR: INT[31], mpil[23:16], id[7:0] */
++	u32 mepc;
++	u32 mintstatus;		/* mil in [31:24] */
++	u32 mstatus;		/* pt_regs->status (shim-reconstructed) */
++};
++
++static struct wt_header *wt_hdr;
++static struct wt_tick *wt_ticks;	/* WT_NTICK slots */
++static struct wt_rec *wt_ring;		/* WT_NREC entries */
++static void __iomem *wt_clic_ctrl;
++static void __iomem *wt_clic_slots;
++static void __iomem *wt_st;
++static bool wt_ready;
++
++/*
++ * ROM ranged writeback (see drivers/cache/esp32p4_cache.c). Non-reentrant
++ * sync engine -- run under IRQ exclusion like every other thunk caller.
++ */
++typedef void (*wt_cache_wb_t)(u32 map, u32 addr, u32 size);
++#define wt_rom_writeback ((wt_cache_wb_t)0x4fc003f4UL)
++#define WT_MAP_L1D	0x10
++#define WT_MAP_L2	0x20
++
++static void wt_writeback(void *addr, size_t size)
++{
++	unsigned long flags;
++
++	local_irq_save(flags);
++	wt_rom_writeback(WT_MAP_L1D, (u32)(uintptr_t)addr, (u32)size);
++	wt_rom_writeback(WT_MAP_L2,  (u32)(uintptr_t)addr, (u32)size);
++	local_irq_restore(flags);
++}
++
++void esp32p4_wedge_trace_irq_entry(struct pt_regs *regs)
++{
++	struct wt_rec *rec;
++	u32 idx;
++
++	if (!wt_ready)
++		return;
++
++	idx = wt_hdr->ring_idx;
++	rec = &wt_ring[idx & (WT_NREC - 1)];
++	rec->mcause = csr_read(CSR_CAUSE);
++	rec->mepc = regs->epc;
++	rec->mintstatus = csr_read(CSR_MINTSTATUS);
++	rec->mstatus = regs->status;
++	wt_hdr->ring_idx = idx + 1;
++
++	wt_writeback(rec, sizeof(*rec));
++	wt_writeback(wt_hdr, sizeof(*wt_hdr));
++}
++
++void esp32p4_wedge_trace_tick(void)
++{
++	struct wt_tick *t;
++	u32 cnt;
++
++	if (!wt_ready)
++		return;
++
++	cnt = wt_hdr->tick_count;
++	t = &wt_ticks[cnt & (WT_NTICK - 1)];
++
++	t->tick_count = cnt;
++	t->jiffies_lo = (u32)jiffies;
++	t->mintstatus = csr_read(CSR_MINTSTATUS);
++	t->clic_thresh = readl(wt_clic_ctrl + CLIC_INT_THRESH_OFF);
++	t->st_conf = readl(wt_st + ST_CONF);
++	t->st_int_ena = readl(wt_st + ST_INT_ENA);
++	t->st_int_raw = readl(wt_st + ST_INT_RAW);
++	t->st_int_st = readl(wt_st + ST_INT_ST);
++	t->target_hi = readl(wt_st + ST_TARGET0_HI);
++	t->target_lo = readl(wt_st + ST_TARGET0_LO);
++
++	/* Latch and read unit 0 (same sequence as the clockevent driver;
++	 * we're inside the tick ISR with IRQs off, so no re-latch race). */
++	writel(ST_UNIT0_OP_UPDATE, wt_st + ST_UNIT0_OP);
++	while (!(readl(wt_st + ST_UNIT0_OP) & ST_UNIT0_OP_VALID))
++		;
++	t->count_hi = readl(wt_st + ST_UNIT0_VAL_HI) & 0xFFFFF;
++	t->count_lo = readl(wt_st + ST_UNIT0_VAL_LO);
++
++	t->clic17 = readl(wt_clic_slots + CLIC_SLOT_SYSTIMER * 4);
++	t->clic18 = readl(wt_clic_slots + CLIC_SLOT_UART0 * 4);
++
++	wt_hdr->tick_count = cnt + 1;
++
++	wt_writeback(t, sizeof(*t));
++	wt_writeback(wt_hdr, sizeof(*wt_hdr));
++}
++
++static void wt_dump_prev(void)
++{
++	u32 nrec = wt_hdr->ring_idx;
++	u32 first, i;
++
++	pr_info("prev boot #%u: %u irq records, %u ticks\n",
++		wt_hdr->boot_count, nrec, wt_hdr->tick_count);
++
++	for (i = 0; i < WT_NTICK; i++) {
++		struct wt_tick *t = &wt_ticks[i];
++
++		if (wt_hdr->tick_count == 0)
++			break;
++		pr_info("tick[%u] tc=%u jf=%08x mint=%08x thr=%08x conf=%08x ena=%x raw=%x st=%x tgt=%05x:%08x cnt=%05x:%08x c17=%08x c18=%08x\n",
++			i, t->tick_count, t->jiffies_lo, t->mintstatus,
++			t->clic_thresh, t->st_conf, t->st_int_ena,
++			t->st_int_raw, t->st_int_st, t->target_hi,
++			t->target_lo, t->count_hi, t->count_lo,
++			t->clic17, t->clic18);
++	}
++
++	first = (nrec > WT_DUMP_RECS) ? nrec - WT_DUMP_RECS : 0;
++	for (i = first; i < nrec; i++) {
++		struct wt_rec *r = &wt_ring[i & (WT_NREC - 1)];
++
++		pr_info("rec[%u] cause=%08x epc=%08x mint=%08x mstat=%08x\n",
++			i, r->mcause, r->mepc, r->mintstatus, r->mstatus);
++	}
++}
++
++static int __init esp32p4_wedge_trace_init(void)
++{
++	void *base = (void *)WT_BASE;	/* NOMMU: phys == virt */
++
++	wt_hdr = base;
++	wt_ticks = base + 0x10;
++	wt_ring = base + 0x10 + WT_NTICK * sizeof(struct wt_tick);
++
++	wt_clic_ctrl = ioremap(CLIC_CTRL_BASE, 0x10);
++	wt_clic_slots = ioremap(CLIC_SLOTS_BASE, 0x3c0);
++	wt_st = ioremap(ST_BASE, 0x100);
++	if (!wt_clic_ctrl || !wt_clic_slots || !wt_st) {
++		pr_err("iomap failed; tracer disabled\n");
++		return -ENOMEM;
++	}
++
++	if (wt_hdr->magic == WT_MAGIC)
++		wt_dump_prev();
++	else
++		pr_info("no previous-boot trace (magic %08x) -- first boot or PSRAM did not persist\n",
++			wt_hdr->magic);
++
++	wt_hdr->magic = WT_MAGIC;
++	wt_hdr->boot_count++;
++	wt_hdr->ring_idx = 0;
++	wt_hdr->tick_count = 0;
++	memset(wt_ticks, 0, WT_NTICK * sizeof(struct wt_tick));
++	wt_writeback(wt_hdr, 0x10 + WT_NTICK * sizeof(struct wt_tick));
++
++	wt_ready = true;
++	pr_info("armed: %u-entry irq ring + %u tick slots at %#lx (boot #%u)\n",
++		WT_NREC, WT_NTICK, WT_BASE, wt_hdr->boot_count);
++	return 0;
++}
++early_initcall(esp32p4_wedge_trace_init);
+--- /dev/null
++++ b/include/linux/esp32p4_wedge_trace.h
+@@ -0,0 +1,32 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * ESP32-P4 wedge tracer hooks: PSRAM-persistent interrupt-delivery
++ * forensics for the silent-wedge investigation. See
++ * drivers/misc/esp32p4_wedge_trace.c and docs/RUNTIME-WEDGE.md.
++ */
++#ifndef _LINUX_ESP32P4_WEDGE_TRACE_H
++#define _LINUX_ESP32P4_WEDGE_TRACE_H
++
++struct pt_regs;
++
++#ifdef CONFIG_ESP32P4_WEDGE_TRACE
++
++/* Called from riscv_intc_irq() on every CLIC interrupt dispatch. */
++void esp32p4_wedge_trace_irq_entry(struct pt_regs *regs);
++
++/* Called from the SYSTIMER clockevent ISR on every tick. */
++void esp32p4_wedge_trace_tick(void);
++
++#else /* !CONFIG_ESP32P4_WEDGE_TRACE */
++
++static inline void esp32p4_wedge_trace_irq_entry(struct pt_regs *regs)
++{
++}
++
++static inline void esp32p4_wedge_trace_tick(void)
++{
++}
++
++#endif /* CONFIG_ESP32P4_WEDGE_TRACE */
++
++#endif /* _LINUX_ESP32P4_WEDGE_TRACE_H */
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -673,4 +673,21 @@
+ source "drivers/misc/keba/Kconfig"
+ source "drivers/misc/amd-sbi/Kconfig"
+ source "drivers/misc/rp1/Kconfig"
++
++config ESP32P4_WEDGE_TRACE
++	bool "ESP32-P4 wedge tracer (PSRAM-persistent IRQ forensics)"
++	depends on SOC_ESP32P4
++	help
++	  Record interrupt-delivery state (raw mcause incl. mpil,
++	  mintstatus.mil, the memory-mapped CLIC threshold, SYSTIMER alarm
++	  state and per-slot CLIC bytes) into a no-map PSRAM carveout on
++	  every interrupt and every tick, and dump the previous boot's
++	  records at the next boot. Diagnostic aid for the silent
++	  interrupt-delivery wedge (docs/RUNTIME-WEDGE.md); the records
++	  survive the MWDT reset that recovers a wedged badge.
++
++	  Small per-interrupt overhead (a few PSRAM writes plus a ranged
++	  cache writeback). Say N on production builds once the wedge is
++	  fixed.
++
+ endmenu
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -77,3 +77,4 @@
+ obj-y				+= amd-sbi/
+ obj-$(CONFIG_MISC_RP1)		+= rp1/
+ obj-$(CONFIG_ESP32_C6_KICK)	+= esp32-c6-kick.o
++obj-$(CONFIG_ESP32P4_WEDGE_TRACE)	+= esp32p4_wedge_trace.o
+--- a/drivers/irqchip/irq-riscv-intc.c
++++ b/drivers/irqchip/irq-riscv-intc.c
+@@ -27,6 +27,7 @@
+ static unsigned int riscv_intc_custom_nr_irqs __ro_after_init;
+ 
+ #ifdef CONFIG_SOC_ESP32P4
++#include <linux/esp32p4_wedge_trace.h>
+ extern struct irq_domain *esp32p4_clic_domain;
+ #endif
+ 
+@@ -45,6 +46,8 @@
+ 	{
+ 		unsigned long clic_id = cause & 0xFF;
+ 
++		esp32p4_wedge_trace_irq_entry(regs);
++
+ 		if (clic_id >= 16) {
+ 			if (esp32p4_clic_domain &&
+ 			    !generic_handle_domain_irq(esp32p4_clic_domain, clic_id))
+--- a/drivers/clocksource/timer-esp32p4-systimer.c
++++ b/drivers/clocksource/timer-esp32p4-systimer.c
+@@ -21,6 +21,7 @@
+ #include <linux/of_irq.h>
+ #include <linux/sched_clock.h>
+ #include <asm/delay.h>		/* riscv_timebase */
++#include <linux/esp32p4_wedge_trace.h>
+ 
+ /* SYSTIMER register byte offsets (struct size = 0x100) */
+ #define ST_CONF          0x00   /* clk_en[31], unit0_work_en[30], target0_work_en[24] */
+@@ -186,6 +187,8 @@
+ 	writel(readl(st_base + ST_CONF) & ~ST_CONF_TARGET0_EN, st_base + ST_CONF);
+ 	writel(BIT(0), st_base + ST_INT_CLR);
+ 
++	esp32p4_wedge_trace_tick();
++
+ 	ce->event_handler(ce);
+ 	return IRQ_HANDLED;
+ }
+--- a/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts
++++ b/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts
+@@ -166,6 +166,19 @@
+ 		ranges;
+ 
+ 		/*
++		 * Wedge-tracer carveout: 128 KB kept out of the buddy
++		 * allocator (no-map) so its contents survive the MWDT
++		 * reset that recovers a wedged badge. The tracer
++		 * (drivers/misc/esp32p4_wedge_trace.c) hardcodes this
++		 * address -- keep WT_BASE in sync. Sits directly below
++		 * the app_pool reservation.
++		 */
++		wedge_trace: wedge-trace@495e0000 {
++			reg = <0x495e0000 0x20000>;
++			no-map;
++		};
++
++		/*
+ 		 * Reserved pool for large NOMMU user-space mmap
+ 		 * allocations. See
+ 		 * Documentation/devicetree/bindings/reserved-memory/
