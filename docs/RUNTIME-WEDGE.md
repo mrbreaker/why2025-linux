@@ -120,6 +120,18 @@ ascending order of cost; each one independently moves the needle.
 >     wedge into a ~2 s hiccup, with reset only as the second-stage
 >     backstop.
 
+> **Positive control PASSED (2026-07-04, closes the 0027 caveat).** With
+> `/dev/watchdog` held open on a *healthy* system, the level-7 stage-0
+> diagnostic interrupt fires and prints every round (mil=0xFF in-handler,
+> ticks still advancing between rounds). The path is proven functional -
+> so its silence during a real wedge is conclusive: **the wedge blocks
+> all interrupt acceptance regardless of CLIC level.** A core-internal,
+> level-independent latch from the mret race: silicon-erratum behaviour,
+> not reachable by any software recovery tried. Remaining avenues: file
+> with Espressif (trace captures + this doc), attempt to reproduce under
+> ESP-IDF/FreeRTOS on a P4, or accept the MWDT reset as the shipping
+> mitigation.
+
 ## 1. Remove `idle=poll` from cmdline (cheap, ~5 min)
 
 The current cmdline forces the CPU to spin in `cpu_idle_loop()`
