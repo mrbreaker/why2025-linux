@@ -159,10 +159,11 @@ ascending order of cost; each one independently moves the needle.
 > software (raising the CLIC threshold before mret deadlocks: nothing
 > ever runs to lower it). With recovery (0026/0027) and avoidance
 > (0029) both exhausted, the software story is closed: the MWDT stage-0
-> reset (0028) is the shipping mitigation, and the fix has to come from
-> Espressif. 0029 was reverted — 16 MMIO reads per user return for a
-> measured-zero benefit (the patch lives in git history at tag-time
-> `fix/wedge-discriminator`, commit 54840c0).
+> reset (0028) is the accepted shipping end-state. A real fix would have
+> to come from silicon/Espressif, which is out of scope for this
+> project — the auto-reset is good enough for a badge. 0029 was reverted
+> — 16 MMIO reads per user return for a measured-zero benefit (the patch
+> lives in git history at commit 54840c0).
 
 ## 1. Remove `idle=poll` from cmdline (cheap, ~5 min)
 

@@ -88,9 +88,10 @@ wedge self-recovers in ≤30 s. The exit-shim pendency drain (patch
 0029) was tried and falsified on hardware — the trigger is an
 interrupt arriving cycle-coincident with the mret, not pre-existing
 pendency (see RUNTIME-WEDGE.md). Software recovery *and* avoidance are
-now both exhausted; remaining avenues: file the trace captures with
-Espressif, or attempt a bare-metal/ESP-IDF reproducer to strengthen
-that filing.
+now both exhausted; the auto-reset is the accepted end-state. (If this
+ever needs to go further: the trace captures would support an
+Espressif erratum filing, or a bare-metal/ESP-IDF reproducer could
+confirm it outside Linux — neither is planned.)
 
 ### What's been ruled out (all hardware-tested)
 - **Memory exhaustion / the NOMMU allocator / FLAT loader / app_pool.**
