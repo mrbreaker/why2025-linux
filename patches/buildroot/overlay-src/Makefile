@@ -28,7 +28,7 @@ CFLAGS  = -fPIC -static -Os -Wall -static-libgcc \
 LDFLAGS = -Wl,-elf2flt="-r" -Wl,--gc-sections
 
 OUT = ../overlay/usr/bin
-BINS = $(OUT)/ble_scan $(OUT)/hci_up $(OUT)/sensorpanel
+BINS = $(OUT)/ble_scan $(OUT)/hci_up $(OUT)/sensorpanel $(OUT)/sleepd
 
 all: $(BINS)
 

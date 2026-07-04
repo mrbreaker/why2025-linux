@@ -26,6 +26,8 @@ squashfs mounted via `mtd-rom` directly out of flash.
 Boot to BusyBox login takes about 7 seconds. From there:
 
 - 720×720 DSI panel with `fbcon`, full keypad mapped to evdev.
+- Fn+Esc puts the display to sleep (backlight + fb off, input
+  grabbed); any key wakes it.
 - BME680 + BMI270 readable via `iio:device*`.
 - Wi-Fi via `wifi-connect <ssid> <psk>`, Bluetooth LE scan via a
   small custom HCI helper.
