@@ -29,9 +29,11 @@ Boot to BusyBox login takes about 7 seconds. From there:
 - Fn+Esc puts the badge display to sleep (display + keyboard
   backlights off, fb blanked, input grabbed); any key wakes it.
 - BME680 + BMI270 readable via `iio:device*`.
-- Wi-Fi via `wifi-connect <ssid> <psk>` (associating currently trips
-  the CLIC wedge below — see KNOWN-ISSUES), Bluetooth LE scan via a
-  small custom HCI helper.
+- Bluetooth LE scan via a small custom HCI helper.
+- Wi-Fi **currently non-functional**: the `wlan0` interface enumerates
+  (C6's real MAC, esp-hosted-NG over SPI), but bringing it up reliably
+  trips the CLIC wedge below within ~30–50 s, so `wifi-connect` can't
+  associate. See [`docs/KNOWN-ISSUES.md`](docs/KNOWN-ISSUES.md).
 - microSD card readable + VFAT-mountable.
 - fbDOOM playable on the panel (`-mb 6`).
 - ~97% cold-boot reliability; the residual ~1/30 boot freeze is a

@@ -141,9 +141,10 @@ ascending order of cost; each one independently moves the needle.
 > with an interrupt pending. Hardware result, two-part:
 >
 > 1. **The wedge is unchanged.** `/bin/true` churn wedged in ~35–65 s
->    (baseline 35–90 s); a `wifi-connect` run wedged within ~17 s of
->    `wpa_supplicant -B`. Userspace Saved PC, WDT reset — same
->    signature.
+>    (baseline 35–90 s); a `wifi-connect` run wedged during `wlan0`
+>    bring-up. WDT reset, same signature. (Bringing `wlan0` up turned
+>    out to be the most reliable wedge trigger of all — see KNOWN-ISSUES
+>    "Wi-Fi is effectively non-functional".)
 > 2. **The drain provably never had work to do.** An instrumented build
 >    (counters in the wedge-trace carveout, read back over `/dev/mem`)
 >    showed 4048 executions of the drain scan across login + churn and

@@ -228,15 +228,20 @@ cause, register-level" above.
   sensorpanel idle are safe.
 - Demos that need continuous child-process churn should be ported to a
   single C process (one fork at startup, then long-running).
-- **`wifi-connect` is a wedge trigger while associating** (verified
-  2026-07-04, shipping kernel): a backgrounded `wpa_supplicant -B` that
-  is scanning/retrying is exactly the "second runnable task" the wedge
-  needs, and against a non-existent AP the badge wedged inside the
-  ~16 s association window every time (Saved PC in userspace, MWDT
-  auto-recovers to a login prompt). A *successful* association (real AP,
-  wpa_supplicant goes near-idle after the 4-way handshake) is untested
-  — needs real credentials on hardware. Treat Wi-Fi as unreliable until
-  that test is run.
+- **Wi-Fi is effectively non-functional: bringing `wlan0` up wedges the
+  badge** (verified 2026-07-04 on the shipping kernel, real AP). The
+  trigger is *not* wpa_supplicant or association — `ip link set wlan0
+  up` on its own, with no further commands and no traffic, wedged the
+  badge within ~30–50 s on every attempt (5+ reproductions, all Saved
+  PC `0x48042f16`, MWDT auto-recovers to a login prompt). Activating the
+  esp-hosted C6 SPI datapath (RX workqueue + periodic SPI + interrupts
+  interleaved with the tick) is in fact a *more* reliable wedge trigger
+  than the busy-loop reproducer. So `wifi-connect` never gets as far as
+  associating: it dies at its `ip link set … up` step. The interface
+  still *enumerates* (probe reads the C6's real MAC, backlight-over-SPI
+  works) — it's only sustained datapath activity that wedges. No
+  software fix (see RUNTIME-WEDGE.md); Wi-Fi is unusable until/unless
+  the underlying CLIC erratum is worked around.
 
 ## Boot residual ~1/30 freeze at pwm-c6 line (deferred)
 
