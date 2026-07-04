@@ -10,9 +10,10 @@ future wedge work.
 
 **They are deliberately outside `patches/linux/`, so Buildroot's
 `BR2_LINUX_KERNEL_PATCH` never applies them.** The shipping series is
-`patches/linux/0001-0024`. Keeping the tracer in a shipping build is
-pure cost: patch 0025 does a PSRAM write + ROM cache-flush thunk on
-*every* interrupt dispatch.
+`patches/linux/0001-0024` + `0030` (0025–0029 skipped: these four
+diagnostics plus the reverted 0029 avoidance experiment). Keeping the
+tracer in a shipping build is pure cost: patch 0025 does a PSRAM write
++ ROM cache-flush thunk on *every* interrupt dispatch.
 
 An A/B on hardware (2026-07-04) confirmed the tracer is **not** the
 cause of any wedge — with these applied the boot-freeze rate was
@@ -32,8 +33,10 @@ in [`../../docs/KNOWN-ISSUES.md`](../../docs/KNOWN-ISSUES.md).
 
 ## Re-enabling them
 
-They apply `-p1` on top of the current shipping series (base: Linux
-6.18.35 + `patches/linux/0001-0024`). To run a diagnostic build:
+They apply `-p1` on top of the current shipping series (they were
+diffed against Linux 6.18.35 + `patches/linux/0001-0024`; the later
+shipping patches touch disjoint files, so filename-sort order stays
+valid). To run a diagnostic build:
 
 ```bash
 cp patches/linux-diagnostics/00*.patch patches/linux/   # 0025-0028

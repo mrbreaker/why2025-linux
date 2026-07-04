@@ -1,0 +1,109 @@
+--- a/drivers/net/wireless/espressif/esp_hosted/main.c
++++ b/drivers/net/wireless/espressif/esp_hosted/main.c
+@@ -250,12 +250,39 @@
+ 	}
+ }
+ 
+-static void init_bt(struct esp_adapter *adapter)
++/*
++ * Delay between the slave boot-up event completing (caps exchanged,
++ * deferred probes kicked) and Bluetooth HCI registration.
++ *
++ * hci_register_dev() immediately queues the HCI core's power_on work:
++ * dozens of HCI command/event round trips over the SPI link, each
++ * costing a handshake/data-ready IRQ pair plus SPI/RX/events workqueue
++ * hops, spread over the following ~2 s (plus the HCI_AUTO_OFF
++ * transition). Registered straight from the boot-up event, that burst
++ * lands on the busiest stretch of boot: the deferred-probe cascade the
++ * trigger below just kicked (pwm-esp-hosted-c6, pwm-backlight, display)
++ * and fbcon's takeover of the new framebuffer. On the WHY2025 badge
++ * that concurrency window is where the CLIC interrupt-delivery erratum
++ * bites — a 30-cycle campaign froze 12/30 boots, every one at the pwm
++ * registration or fb0 line, both inside this burst (see
++ * docs/KNOWN-ISSUES.md "Boot freeze in the display + backlight bring-up
++ * window"). Nothing uses BT during boot (hci_up/bluetoothd run manually
++ * if at all), so register the HCI device from a delayed work once
++ * bring-up has gone quiet instead.
++ */
++#define ESP_BT_INIT_SETTLE_MS	15000
++
++static void esp_bt_init_work(struct work_struct *work)
+ {
++	struct esp_adapter *adapter = container_of(to_delayed_work(work),
++						   struct esp_adapter,
++						   bt_init_work);
+ 
++	if (!test_bit(ESP_INIT_DONE, &adapter->state_flags))
++		return;
++
+ 	if ((adapter->capabilities & ESP_BT_SPI_SUPPORT) ||
+ 		(adapter->capabilities & ESP_BT_SDIO_SUPPORT)) {
+-		msleep(200);
+ 		esp_info("ESP Bluetooth init\n");
+ 		esp_init_bt(adapter);
+ 	}
+@@ -326,6 +353,11 @@
+ 	}
+ 
+ 	clear_bit(ESP_INIT_DONE, &adapter->state_flags);
++	/* A pending BT init from a previous boot-up event must not fire
++	 * into the re-initialization below; a fresh one is scheduled once
++	 * this event is fully processed.
++	 */
++	cancel_delayed_work_sync(&adapter->bt_init_work);
+ 	/* Deinit module if already initialized */
+ 	test_raw_tp_cleanup();
+ 	esp_deinit_module(adapter);
+@@ -376,8 +408,6 @@
+ 		esp_err("network interface init failed\n");
+ 		return -1;
+ 	}
+-	init_bt(adapter);
+-
+ 	if (ota_file && strlen(ota_file) != 0) {
+ 		esp_info("OTA update requested: bin(%s)\n", ota_file);
+ 		esp_start_ota(adapter, ota_file);
+@@ -402,6 +432,12 @@
+ 	 */
+ 	driver_deferred_probe_trigger();
+ 
++	/* HCI registration is deferred out of the boot window; see
++	 * esp_bt_init_work().
++	 */
++	schedule_delayed_work(&adapter->bt_init_work,
++			      msecs_to_jiffies(ESP_BT_INIT_SETTLE_MS));
++
+ 	return 0;
+ }
+ 
+@@ -712,6 +748,7 @@
+ 	esp_stop_network_ifaces(adapter);
+ 	esp_cfg_cleanup(adapter);
+ 	/* BT may have been initialized after fw boot-up event, deinit it */
++	cancel_delayed_work_sync(&adapter->bt_init_work);
+ 	esp_deinit_bt(adapter);
+ 
+ 	if (adapter->if_rx_workqueue) {
+@@ -1081,6 +1118,8 @@
+ 
+ 	INIT_WORK(&adapter.mac_flter_work, update_mac_filter);
+ 
++	INIT_DELAYED_WORK(&adapter.bt_init_work, esp_bt_init_work);
++
+ 	return &adapter;
+ }
+ 
+--- a/drivers/net/wireless/espressif/esp_hosted/include/esp.h
++++ b/drivers/net/wireless/espressif/esp_hosted/include/esp.h
+@@ -123,6 +123,11 @@
+ 
+ 	struct work_struct      mac_flter_work;
+ 
++	/* Boot-window-deferred Bluetooth HCI registration; see
++	 * esp_bt_init_work() in main.c.
++	 */
++	struct delayed_work     bt_init_work;
++
+ 	struct workqueue_struct *cmd_wq;
+ 	struct work_struct      cmd_work;
+ 

@@ -37,15 +37,17 @@ new work lands as additional topic patches on top (0013+).
 | 0022 | `clocksource-esp32p4-systimer-level-trigger.patch` | Wedge-investigation hardening (hardware-tested 2026-07-04: does **not** fix the wedge). Switch the SYSTIMER CLIC slot from `IRQ_TYPE_EDGE_RISING` to `IRQ_TYPE_LEVEL_HIGH` — it was the *only* edge-triggered slot; every other peripheral is level. `target0` is a latched status bit (asserts on match, held until `ST_INT_CLR`), so level is the natural, self-healing fit and removes the "a re-armed one-shot tick that loses/coalesces a single edge dies permanently" failure class. Drops the now-unneeded (and, on a level slot, harmful) manual CLIC-INTIP poke from the ISR. Booted cleanly on hardware; the wedge (see `docs/KNOWN-ISSUES.md`) still occurred, so kept as robustness only. |
 | 0023 | `riscv-esp32p4-force-mpie-user-return.patch` | Wedge-investigation hardening (hardware-tested 2026-07-04: does **not** fix the wedge). In the CLIC v0.9 `mcause` exit shim (`entry.S`), force `MPIE=1` on every return to **userspace** (detected via the `PT_TP != kernel tp` SCRATCH invariant), so a user task can never resume with interrupts masked. Correct invariant regardless (userspace must always run with interrupts enabled). Tested the "task resumes in userspace with MIE=0" theory of the wedge; it still wedged with *all* interrupts dead, which localised the fault to CLIC-level delivery (`mil`) rather than per-task MIE — see `docs/RUNTIME-WEDGE.md`. |
 | 0024 | `esp-hosted-c6-keyboard-backlight-channel.patch` | Keyboard-backlight control: adds a channel-select byte to `CMD_SET_BACKLIGHT` (`cmd_set_backlight(adapter, channel, brightness)`; 0 = display, 1 = keyboard), grows `pwm-esp-hosted-c6` to 2 channels with per-channel first-apply skip + value dedupe (channel 1 seeded with the slave's `BL_KEYBOARD_DUTY` = 25), and adds the DTS `kbd-backlight` pwm-backlight node → `/sys/class/backlight/kbd-backlight`. Lets `sleepd` (Fn+Esc sleep) darken the keyboard glow too. **Needs c6-slave patch 0006 on the C6** — an old slave ignores the channel byte and applies keyboard writes to the display channel. |
+| 0030 | `esp-hosted-defer-bt-init.patch` | Boot-reliability: move Bluetooth HCI registration out of the boot window. `init_bt()` ran inside the boot-up event handler, and `hci_register_dev()` immediately fires the HCI core's power_on sequence — dozens of HCI command/event round trips over SPI, each costing a handshake/data-ready IRQ pair plus SPI/RX/events workqueue hops, spread over the following ~2 s. That burst exactly covered both boot-freeze clusters of the 2026-07-04 campaign (the `pwm-c6 … registered` and `[drm] fb0` lines — the CLIC wedge's boot-time face, `docs/KNOWN-ISSUES.md`). Nothing uses BT during boot, so the HCI device is now registered from a `delayed_work` 15 s after caps-done (`ESP_BT_INIT_SETTLE_MS`), cancelled on slave re-bootup and card removal. Hardware-verified 2026-07-04: eliminated the fb0-window freeze class outright; see the campaign table in `docs/KNOWN-ISSUES.md` for the numbers. BT comes up at ~21 s uptime instead of ~6 s. |
 
-The shipping series ends at 0024. The wedge-investigation tracer /
-diagnostic patches (formerly 0025–0028) are **concluded** and have been
-moved out of the applied series to
-[`../linux-diagnostics/`](../linux-diagnostics/) — kept for future
-wedge work but never built into the shipping kernel (the tracer adds a
-PSRAM write + cache flush on every interrupt). See that directory's
-README, `docs/RUNTIME-WEDGE.md`, and the boot-reliability campaign in
-`docs/KNOWN-ISSUES.md`.
+The shipping series ends at 0030. **0025–0029 are deliberately
+skipped**: 0025–0028 are the wedge-investigation tracer / diagnostic
+patches, **concluded** and moved out of the applied series to
+[`../linux-diagnostics/`](../linux-diagnostics/) (kept for future wedge
+work but never built into the shipping kernel — the tracer adds a PSRAM
+write + cache flush on every interrupt), and 0029 was the exit-shim
+pendency-drain avoidance experiment, falsified on hardware and reverted
+(git history only). See the diagnostics README, `docs/RUNTIME-WEDGE.md`,
+and the boot-reliability campaign in `docs/KNOWN-ISSUES.md`.
 
 ## Build configs included here
 

@@ -146,8 +146,9 @@ login is unreliable (do it fast, or idle ~45 s first).
 The "boot-time reliability claims need a fresh `freezetest.py`
 campaign" this note used to call for **has now been run** — see "Boot
 freeze in the display + backlight bring-up window" below: ~40% of
-first-try boots freeze in that window on the current build, far above
-the old ~1/30 estimate.
+first-try boots froze in that window on the 0001–0024 build, far above
+the old ~1/30 estimate (patch 0030 has since cut it to ~27% by
+eliminating one of the two freeze classes).
 
 ### What it scales with
 **The presence of concurrent context switches, not fork+exec rate.**
@@ -278,11 +279,12 @@ So the pwm-c6 first-apply fixes (0011), the cmd-channel ownership fix
 (0008) and the value dedupe (0018) all still leave this freeze — they
 address real bugs in that path but not the underlying CLIC wedge.
 
-**Practical impact is softer than 40% suggests:** the MWDT (patch 0019)
-auto-resets each frozen boot in ≤30 s and each attempt is independent
-at ~60%, so the badge normally reaches login after 1–2 retries
-(≈0–60 s of extra wait), not bricked. But "boots first try 60 % of the
-time" is the honest number, not "~97%".
+**Practical impact is softer than the freeze rate suggests:** the MWDT
+(patch 0019) auto-resets each frozen boot in ≤30 s and each attempt is
+independent (~60% baseline, ~73% with patch 0030 — see below), so the
+badge normally reaches login after 1–2 retries (≈0–60 s of extra
+wait), not bricked. But the first-try number is the honest one, not
+"~97%".
 
 **Confirmed by a cold power-cycle campaign (2026-07-04).** The warm
 `freezetest.py` resets only the P4, so it was fair to worry the C6
@@ -292,7 +294,46 @@ USB disconnected) gave **8/13 = 62% first-try success** — statistically
 indistinguishable from the warm 18/30 = 60%. Combined 26/43 = ~60%. So
 the ~40% freeze is real, P4-side (the display + backlight bring-up), and
 independent of the C6's reset state; the harness caveats are ruled out.
-The number to quote is **~60% first-try cold-boot success.**
+That baseline number was **~60% first-try cold-boot success.**
+
+**Partially fixed by patch 0030 (2026-07-04): the fb0-window freeze
+class is eliminated; first-try success is now ~73%.** A code-level
+audit of the freeze window found both freeze clusters sit inside the
+Bluetooth HCI power-on burst: `init_bt()` ran in esp-hosted's boot-up
+event handler, and `hci_register_dev()` immediately queues the HCI
+core's power_on sequence — dozens of HCI command/event round trips
+over SPI, each costing a handshake/data-ready rising-edge IRQ pair
+plus SPI→RX→events workqueue hops, spread over ~5.7–7.7 s and
+precisely covering the pwm-c6 registration line (freeze A) and
+fbcon's takeover of fb0 (freeze B). Nothing uses BT during boot, so
+patch 0030 registers the HCI device from a delayed work 15 s after
+caps-done instead (`hci0` now appears at ~21 s uptime — re-verified
+present and registering cleanly).
+
+90-cycle verification (3 × 30 warm `freezetest.py` runs, same harness
+and 45 s settle as the baseline): **66/90 = 73.3% first-try success**
+(24, 20, 22 per run) vs the 26/43 = 60.5% baseline. Class-level:
+
+- **fb0-line freezes: 0/90** (baseline 6/30) — one-sided Fisher
+  p = 1.6×10⁻⁴. The freeze class the HCI burst overlapped is gone.
+- **caps-window freezes: 24/90 = 26.7%** (baseline 6/30 = 20%;
+  statistically unchanged, p = 0.32). All 24 stopped at the
+  `esp_reg_notifier: cfg80211 regulatory domain callback` line (19) or
+  the `pwm-c6 … registered` line (5): the wedge latches somewhere in
+  the ~5.45–6.4 s stretch where the deferred-probe cascade, the
+  cfg80211 regulatory-domain work (regdb signature verification), rcS
+  userspace churn, and the start of `fbdev_setup_work` coexist. This
+  class predates 0030 (it was baseline freeze A) and is the remaining
+  target.
+- The overall-rate comparison alone gives one-sided p = 0.097 (power
+  limited by the N=43 baseline), so the honest headline is "~73%
+  first-try, one of the two freeze classes eliminated" — not "fixed".
+
+Untried levers for the residual caps-window class: delay
+`driver_deferred_probe_trigger()` out of the events/cfg80211 tail
+(same delayed-work pattern as 0030), shift `fbdev_setup_work` past the
+window, drop `CFG80211_REQUIRE_SIGNED_REGDB` (the RSA verify lands at
+~5.5 s on a 360 MHz core), or thin early rcS.
 
 ### Older notes on the pwm-c6 path (bugs fixed, not the whole story)
 
