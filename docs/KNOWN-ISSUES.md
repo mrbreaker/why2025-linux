@@ -284,19 +284,15 @@ at ~60%, so the badge normally reaches login after 1–2 retries
 (≈0–60 s of extra wait), not bricked. But "boots first try 60 % of the
 time" is the honest number, not "~97%".
 
-**Two harness caveats before trusting 40 % as the true cold-boot rate
-(both would need physical power-cycling to rule out):**
-- `freezetest.py` pulses RTS, which resets **only the P4** — the C6
-  coprocessor keeps its previous esp-hosted session. A real power-on
-  resets both. Since half the freezes are on the C6-dependent pwm-c6
-  line, a stale C6 session on warm reset may inflate the rate.
-- Warm RTS reset may also leave PSRAM / DSI state the ROM would clear
-  on a cold boot.
-
-A **cold power-cycle campaign** (physically toggling power, or a harness
-that also resets the C6) is the outstanding item to get the real
-first-try number and to decide whether the README figure should be
-corrected to it. Until then the README carries a qualified claim.
+**Confirmed by a cold power-cycle campaign (2026-07-04).** The warm
+`freezetest.py` resets only the P4, so it was fair to worry the C6
+keeping a stale esp-hosted session across resets inflated the rate. It
+does not: 13 *physical* power cycles (both chips reset together, C6
+USB disconnected) gave **8/13 = 62% first-try success** — statistically
+indistinguishable from the warm 18/30 = 60%. Combined 26/43 = ~60%. So
+the ~40% freeze is real, P4-side (the display + backlight bring-up), and
+independent of the C6's reset state; the harness caveats are ruled out.
+The number to quote is **~60% first-try cold-boot success.**
 
 ### Older notes on the pwm-c6 path (bugs fixed, not the whole story)
 
