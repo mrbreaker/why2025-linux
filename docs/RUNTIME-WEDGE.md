@@ -132,6 +132,21 @@ ascending order of cost; each one independently moves the needle.
 > ESP-IDF/FreeRTOS on a P4, or accept the MWDT reset as the shipping
 > mitigation.
 
+> **Race-window mitigation shipped, pending hardware verdict (patch
+> 0029).** Recovery is impossible, but *avoidance* hasn't been tried:
+> every capture shows the latch on an mret-to-user with an interrupt
+> already pending, while kernel-return mrets never latch. Patch 0029
+> therefore drains pending CLIC interrupts from kernel context in
+> `ret_from_exception`'s user path (trampoline mret to pop the running
+> level, then a short MIE window, rescan ≤8 rounds) so the final mret
+> almost never executes with an interrupt pending. This is also the
+> discriminating experiment for the raced-mret model: reproducer wedge
+> rate should collapse by orders of magnitude if the model is right.
+> Known semantic cost: an interrupt taken in the drain window that sets
+> `TIF_NEED_RESCHED`/`TIF_SIGPENDING` isn't honoured until the next
+> trap (≤1 tick) — acceptable for the experiment; revisit if it ships
+> long-term.
+
 ## 1. Remove `idle=poll` from cmdline (cheap, ~5 min)
 
 The current cmdline forces the CPU to spin in `cpu_idle_loop()`
