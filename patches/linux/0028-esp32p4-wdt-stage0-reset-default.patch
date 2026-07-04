@@ -1,0 +1,18 @@
+--- a/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts
++++ b/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts
+@@ -151,8 +151,14 @@
+ 			 * level 3 -- deliverable even when the wedge has
+ 			 * latched the running level (docs/RUNTIME-WEDGE.md).
+ 			 * Stage 1 (2x timeout) remains a system reset.
++			 *
++			 * DISABLED for daily use: the experiment concluded --
++			 * the wedge blocks even level-7 delivery, so the
++			 * interrupt buys nothing and doubles recovery time
++			 * (~90 s stage-1 worst case vs ~30 s stage-0 reset).
++			 * Uncomment to re-run live-wedge diagnostics.
+ 			 */
+-			interrupts-extended = <&clic0 24 48 IRQ_TYPE_LEVEL_HIGH>;
++			/* interrupts-extended = <&clic0 24 48 IRQ_TYPE_LEVEL_HIGH>; */
+ 			timeout-sec = <30>;
+ 		};
+ 	};
