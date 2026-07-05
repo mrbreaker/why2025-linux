@@ -1,0 +1,91 @@
+--- a/drivers/net/wireless/espressif/esp_hosted/main.c
++++ b/drivers/net/wireless/espressif/esp_hosted/main.c
+@@ -269,9 +269,27 @@
+  * window"). Nothing uses BT during boot (hci_up/bluetoothd run manually
+  * if at all), so register the HCI device from a delayed work once
+  * bring-up has gone quiet instead.
++ *
++ * The settle delay alone turned out not to be enough on cold boots:
++ * with both chips freshly powered (cable plug-in, as opposed to the
++ * P4-only RTS resets the boot campaigns used), the registration burst
++ * at ~21 s still wedges the kernel hard enough to trip the MWDT
++ * (hardware-captured 2026-07-05, twice, last console line exactly
++ * "ESP Bluetooth init"). Since nothing needs BT until a user runs one
++ * of the HCI tools, HCI registration is now opt-in at runtime:
++ *
++ *   echo 1 > /sys/module/esp32_spi/parameters/bt_enable
++ *
++ * (ble_scan/ble_adv/hci_up write it themselves). Set at runtime the
++ * init work runs immediately; set on the kernel command line
++ * (esp32_spi.bt_enable=1) it is scheduled from the boot-up event with
++ * the original settle delay — that path re-enters the cold-boot wedge
++ * window and exists for bisection, not for shipping.
+  */
+ #define ESP_BT_INIT_SETTLE_MS	15000
+ 
++static bool esp_bt_enable;
++
+ static void esp_bt_init_work(struct work_struct *work)
+ {
+ 	struct esp_adapter *adapter = container_of(to_delayed_work(work),
+@@ -286,8 +304,41 @@
+ 		esp_info("ESP Bluetooth init\n");
+ 		esp_init_bt(adapter);
+ 	}
++}
++
++static int esp_bt_enable_set(const char *val, const struct kernel_param *kp)
++{
++	struct esp_adapter *adapter = esp_get_adapter();
++	bool was_on = esp_bt_enable;
++	int ret;
++
++	ret = param_set_bool(val, kp);
++	if (ret)
++		return ret;
++
++	/*
++	 * One-way: turning the knob off doesn't tear the HCI device
++	 * down (nothing on the badge needs that, and the deinit path is
++	 * only exercised on slave re-bootup). If the adapter isn't up
++	 * yet — including the cmdline-parse call, which runs before
++	 * init_adapter() — the boot-up event handler picks the flag up
++	 * instead; bt_init_work itself re-checks ESP_INIT_DONE.
++	 */
++	if (esp_bt_enable && !was_on &&
++	    test_bit(ESP_INIT_DONE, &adapter->state_flags))
++		schedule_delayed_work(&adapter->bt_init_work, 0);
++
++	return 0;
+ }
+ 
++static const struct kernel_param_ops esp_bt_enable_ops = {
++	.set = esp_bt_enable_set,
++	.get = param_get_bool,
++};
++module_param_cb(bt_enable, &esp_bt_enable_ops, &esp_bt_enable, 0644);
++MODULE_PARM_DESC(bt_enable,
++		 "Register the Bluetooth HCI device (opt-in; set by the HCI tools)");
++
+ static int check_esp_version(struct fw_version *ver)
+ {
+ 	snprintf(version_str, VERSION_BUFFER_SIZE, "%s-%u.%u.%u.%u.%u",
+@@ -432,11 +483,14 @@
+ 	 */
+ 	driver_deferred_probe_trigger();
+ 
+-	/* HCI registration is deferred out of the boot window; see
+-	 * esp_bt_init_work().
++	/* HCI registration is opt-in and normally requested at runtime
++	 * via the bt_enable knob; this path only fires when the flag was
++	 * set before the slave came up (esp32_spi.bt_enable=1 on the
++	 * cmdline), and keeps the settle delay. See esp_bt_init_work().
+ 	 */
+-	schedule_delayed_work(&adapter->bt_init_work,
+-			      msecs_to_jiffies(ESP_BT_INIT_SETTLE_MS));
++	if (esp_bt_enable)
++		schedule_delayed_work(&adapter->bt_init_work,
++				      msecs_to_jiffies(ESP_BT_INIT_SETTLE_MS));
+ 
+ 	return 0;
+ }

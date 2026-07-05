@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Minimal hci_up — write(2) only, no stdio. Aims to avoid uClibc FLAT
- * relocation pathologies seen with fprintf/printf in this toolchain. */
+ * relocation pathologies seen with fprintf/printf in this toolchain.
+ * Also doubles as the "enable BT" poke: HCI registration is opt-in
+ * since kernel patch 0035 (the boot-time burst wedged cold boots). */
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
@@ -26,6 +29,21 @@ static void say_int(int v)
 
 int main(void)
 {
+	say("S0 request BT (bt_enable knob), wait for hci0\n");
+	int kfd = open("/sys/module/esp32_spi/parameters/bt_enable", O_WRONLY);
+	if (kfd >= 0) {
+		write(kfd, "1", 1);
+		close(kfd);
+	}
+	int tries = 0;
+	while (access("/sys/class/bluetooth/hci0", F_OK) < 0) {
+		if (++tries > 40) {
+			say("hci0 never appeared\n");
+			return 3;
+		}
+		usleep(500000);
+	}
+
 	say("S0 socket\n");
 	int s = socket(AF_BLUETOOTH, SOCK_RAW, BTPROTO_HCI);
 	if (s < 0) {

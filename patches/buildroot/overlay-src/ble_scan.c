@@ -13,6 +13,7 @@
  */
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <string.h>
 #include <stdint.h>
 #include <poll.h>
@@ -188,11 +189,23 @@ int main(int argc, char **argv)
 		.hci_dev = 0,
 		.hci_channel = HCI_CHANNEL_USER,
 	};
+	/* HCI registration is opt-in since kernel patch 0035 (the boot-time
+	 * burst wedged cold boots): request it, then wait out ENODEV while
+	 * the kernel registers hci0 over the C6 SPI link (a few seconds). */
+	int kfd = open("/sys/module/esp32_spi/parameters/bt_enable", O_WRONLY);
+	if (kfd >= 0) {
+		write(kfd, "1", 1);
+		close(kfd);
+	}
 	say("ble_scan: bind hci0 CHANNEL_USER\n");
-	if (bind(sk, (struct sockaddr *)&addr, sizeof addr) < 0) {
-		say("bind failed errno="); say_int(errno);
-		say(" (-16=EBUSY -> need fresh power-cycle)\n");
-		return 2;
+	int tries = 0;
+	while (bind(sk, (struct sockaddr *)&addr, sizeof addr) < 0) {
+		if (errno != ENODEV || ++tries > 40) {
+			say("bind failed errno="); say_int(errno);
+			say(" (-16=EBUSY -> another HCI tool is running)\n");
+			return 2;
+		}
+		usleep(500000);
 	}
 
 	say("ble_scan: HCI Reset");
