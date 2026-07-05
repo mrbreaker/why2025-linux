@@ -474,6 +474,20 @@ paths), which is a larger change to the command-channel's locking than
 the ownership-check fix — deferred until it can be validated with a real
 boot-cycle load test.
 
+**Timing shift in this window (2026-07-05, patch 0033, pending hardware
+verification):** the DSI glue's two bring-up timers were reworked —
+`fbdev_setup_work` now fires 1 s after probe (~4.5 s, was ~6.5 s) and
+`dpi_enable_work` is armed deterministically from an
+`atomic_commit_tail` hook instead of a fixed 3 s timer (video-on ~5.3 s,
+was ~10.0 s). This moves the fb0/fbcon allocations earlier into the
+deferred-probe window this section describes. Any future freeze
+campaign must (a) run 30+ cycles post-0033, and (b) assert the
+`[drm] fb0` / `Console: switching to colour frame buffer` lines appear
+in every successful cycle — the fbdev shadow-fb `vzalloc(1 MB)` failure
+mode is silent (boot completes, panel stays on the logo/blank, only
+serial works). Also spot-check Fn+Esc sleep/wake: wake latency drops
+3 s → ~0 with the commit-tail hook.
+
 ## BMI270 internal status check sometimes fails
 
 After firmware upload, the chip's `INTERNAL_STATUS` register sometimes

@@ -1,0 +1,104 @@
+--- a/drivers/gpu/drm/espressif/dw-mipi-dsi-esp32p4.c
++++ b/drivers/gpu/drm/espressif/dw-mipi-dsi-esp32p4.c
+@@ -1273,15 +1273,12 @@
+ 	dsi->vfp_cache   = mode->vsync_start - mode->vdisplay;
+ 
+ 	/*
+-	 * v5: 3 s delay instead of 400 ms. The late-enable work now programs
+-	 * the bridge and performs the VIDEO-mode transition — it must fire
+-	 * AFTER panel_bridge.enable completes, which runs after dw_bridge.
+-	 * atomic_enable (~1.25 s) plus ST7703 .enable's init table (~50 ms)
+-	 * + sleep_out wait (120 ms) + DISPLAY_ON — so completion ~1.4 s.
+-	 * 3 s gives ~1.5 s margin. TODO: replace with a proper bridge-chain-
+-	 * done hook once bring-up settles.
++	 * dpi_enable_work is armed from esp32p4_dsi_atomic_commit_tail()
++	 * once the bridge/panel enable chain has completed — see there.
++	 * (Replaced the v5 fixed 3 s timer that approximated the same
++	 * ordering; the timer's ~1.4 s completion estimate was stale
++	 * anyway, measured ~0.3 s on hardware.)
+ 	 */
+-	schedule_delayed_work(&dsi->dpi_enable_work, msecs_to_jiffies(3000));
+ }
+ 
+ static void esp32p4_dsi_pipe_disable(struct drm_simple_display_pipe *pipe)
+@@ -1491,6 +1488,35 @@
+ 	.fb_create	= drm_gem_fb_create_with_dirty,
+ 	.atomic_check	= drm_atomic_helper_check,
+ 	.atomic_commit	= drm_atomic_helper_commit,
++};
++
++/*
++ * Runs the default commit-tail, then arms the DPI/VIDEO enable work for
++ * any CRTC that just went through an enabling modeset. By the time
++ * drm_atomic_helper_commit_tail() returns, commit_modeset_enables() has
++ * run the whole bridge chain synchronously (PHY init, ST7703 reset +
++ * init table + sleep-out + DISPLAY_ON, DW host enable) — exactly the
++ * ordering pipe_enable's old fixed 3 s timer approximated, minus the
++ * dead time.
++ */
++static void esp32p4_dsi_atomic_commit_tail(struct drm_atomic_state *state)
++{
++	struct esp32p4_dsi *dsi = drm_to_esp32p4_dsi(state->dev);
++	struct drm_crtc_state *new_crtc_state;
++	struct drm_crtc *crtc;
++	unsigned int i;
++
++	drm_atomic_helper_commit_tail(state);
++
++	for_each_new_crtc_in_state(state, crtc, new_crtc_state, i) {
++		if (new_crtc_state->active &&
++		    drm_atomic_crtc_needs_modeset(new_crtc_state))
++			schedule_delayed_work(&dsi->dpi_enable_work, 0);
++	}
++}
++
++static const struct drm_mode_config_helper_funcs esp32p4_dsi_mode_config_helpers = {
++	.atomic_commit_tail = esp32p4_dsi_atomic_commit_tail,
+ };
+ 
+ DEFINE_DRM_GEM_DMA_FOPS(esp32p4_dsi_drm_fops);
+@@ -1526,6 +1552,7 @@
+ 	drm->mode_config.max_width  = 2048;
+ 	drm->mode_config.max_height = 2048;
+ 	drm->mode_config.funcs      = &esp32p4_dsi_mode_config_funcs;
++	drm->mode_config.helper_private = &esp32p4_dsi_mode_config_helpers;
+ 
+ 	/*
+ 	 * Stand up the display pipe: one primary plane (RGB565), one CRTC,
+@@ -1738,10 +1765,17 @@
+ 	 * but fbcon never attaches.
+ 	 *
+ 	 * Deferred to give the buddy heap time to settle past sensor probes
+-	 * (BMI270 firmware upload over bit-banged I²C is the worst offender,
+-	 * fragmenting memory enough that the 1 MB shadow vzalloc fails).
++	 * (the synchronous-at-probe attempt failed its 1 MB shadow vzalloc
++	 * amid the ~3.4 s deferred-probe/firmware-request churn). Measured
++	 * timeline: this probe lands at ~3.4 s, the BMI270 firmware attempts
++	 * fast-fail with -ENOENT by ~3.5 s (the real 8 KB upload happens at
++	 * patch 0009's ~8.5 s retry, which the old 6.5 s fbdev setup also
++	 * ran before), so 1 s (work fires ~4.5 s) clears the probe-time
++	 * churn — the original 3 s predates the measurement. Verify any
++	 * further cut with a freezetest campaign asserting fb0 appears:
++	 * the vzalloc failure mode is silent.
+ 	 */
+-	schedule_delayed_work(&dsi->fbdev_setup_work, 3 * HZ);
++	schedule_delayed_work(&dsi->fbdev_setup_work, HZ);
+ 
+ 	/*
+ 	 * Start fbdev emulation so the kernel issues an initial atomic
+--- a/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts
++++ b/arch/riscv/boot/dts/espressif/esp32p4-why2025.dts
+@@ -257,8 +257,11 @@
+ 		brightness-levels = <0 255>;
+ 		num-interpolated-steps = <255>;
+ 		/*
+-		 * Backlight comes on at probe time (~4.5s). Panel is dark
+-		 * until DSI drives video at ~6.7s, then fbcon paints. The
++		 * The backlight is already lit from C6 power-up (the slave
++		 * firmware inits LEDC duty 76 in app_main; the probe-time
++		 * .apply() dedupes to zero SPI traffic). Panel is dark until
++		 * DSI drives video — ~5.3s since the commit-tail rework in
++		 * the DSI glue driver; was ~10s with its fixed 3s timers. The
+ 		 * fade-in via userspace (/etc/init.d/S99backlight-fade) was
+ 		 * dropped: its 30+ usleep+poll forks during the 4-9s boot
+ 		 * window perturbed deferred_probe_work / pwm-backlight's
