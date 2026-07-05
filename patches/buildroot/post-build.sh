@@ -39,7 +39,8 @@ fi
 
 # WHY2025: raise dropbear's FLAT stack 4 KB -> 16 KB (kex/crypt stack
 # headroom; the elf2flt default is 4 KB). In-memory image becomes
-# 491,744 B — still inside the 512 KB order-7 bucket, see
+# 514,288 B (with the client programs) — still inside the 512 KB
+# order-7 bucket with ~10 KB spare, see
 # patches/buildroot/dropbear-localoptions.h. flthdr comes from
 # HOST_DIR/bin, which Buildroot puts first on PATH for this script.
 # Idempotent: -s sets an absolute value.

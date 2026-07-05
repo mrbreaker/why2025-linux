@@ -99,10 +99,12 @@ PSRAM build (all numbers measured with `flthdr`, 2026-07-05):
     ~760 KB) → order-8 (1 MB) block, with only ~48 KB of headroom.
     Check `flthdr` after any wpa_supplicant or toolchain change.
   - dropbear (ed25519/curve25519-only trim via
-    `dropbear-localoptions.h`) is 491,744 B all-in with the 16 KB stack
-    `post-build.sh` sets → order-7 (512 KB), ~32 KB headroom.
-    Re-enabling the client programs or the stock algorithm set pushes
-    it past 512 KB.
+    `dropbear-localoptions.h`, client programs included) is 514,288 B
+    all-in with the 16 KB stack `post-build.sh` sets → order-7
+    (512 KB) with only ~10 KB of headroom. Nothing more fits in this
+    bucket: any added option (or the stock algorithm set, 543 KB)
+    tips every per-connection exec into the 1 MB class. Re-measure
+    with `flthdr` after any dropbear or toolchain change.
   - sensorpanel ~62 KB → order-4 (64 KB) fork allocation.
 
 If you add a new utility, audit its size and round up. Anything over

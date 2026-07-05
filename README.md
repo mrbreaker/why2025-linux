@@ -54,9 +54,12 @@ Boot to BusyBox login takes about 7 seconds. From there:
   `rc.local`, SSH keys — while the rootfs itself stays read-only
   squashfs. Hot-insert: `mount /mnt/sd`. *(shipped 2026-07-05, pending
   hardware verification)*
-- SSH in via dropbear (key-only: put an `ssh-ed25519` pubkey in
-  `badge/ssh/authorized_keys` on the card; scp works). *(shipped
-  2026-07-05, pending hardware verification)*
+- SSH via dropbear, both directions: inbound key-only (put an
+  `ssh-ed25519` pubkey in `badge/ssh/authorized_keys` on the card) and
+  outbound `ssh`/`dbclient`/`scp` from the badge (talks to servers
+  with ed25519 host keys; `known_hosts` persists on the card). Server
+  side hardware-verified 2026-07-05 (inetd listening); sessions
+  end-to-end pending.
 - busybox vi, colour prompt, shell history, sane `TERM` on the panel
   console, and a login banner with quick-start hints.
 - `launcher` — a keypad-driven menu on the panel (sensor panel, DOOM
