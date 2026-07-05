@@ -30,6 +30,7 @@ CLAUDE.md
 /buildroot/
 
 # FLAT userspace binaries — build from patches/buildroot/overlay-src/
+patches/buildroot/overlay/usr/bin/ble_adv
 patches/buildroot/overlay/usr/bin/ble_scan
 patches/buildroot/overlay/usr/bin/hci_up
 patches/buildroot/overlay/usr/bin/sensorpanel

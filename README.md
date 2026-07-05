@@ -37,7 +37,10 @@ Boot to BusyBox login takes about 7 seconds. From there:
   `multi_intensity`), with kernel LED triggers enabled — `echo
   heartbeat > .../trigger` for a zero-userspace kernel-alive blinker,
   `netdev` for a Wi-Fi activity light.
-- Bluetooth LE scan via a small custom HCI helper.
+- Bluetooth LE scan + advertise via small custom HCI helpers
+  (`ble_scan`; `ble_adv &` broadcasts the badge's hostname so other
+  badges' scans can see it). *(ble_adv shipped 2026-07-05, pending
+  hardware verification)*
 - Wi-Fi **working** (`wifi-connect "<ssid>" "<psk>"` → associate + DHCP
   + reach the internet), hardware-verified 2026-07-05. The old `wlan0
   up` hang was an IPv6 timer (`rs_timer`) corrupting the timer wheel,
