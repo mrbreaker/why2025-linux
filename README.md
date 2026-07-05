@@ -7,9 +7,12 @@ but it got a bit out of hand. There's a working DSI panel, Wi-Fi, Bluetooth,
 the IMU/environmental sensors, fbDOOM, and a small kernel patch series.
 I won't pretend it's upstream-ready but it's enough for a proof of concept.
 
-As I said, it's a proof of concept, so don't assume it's a stable build. 
-There's a documented runtime issue under heavy fork+exec churn that I 
-haven't solved, among other rough edges. It's definitely not battle-tested.
+As I said, it's a proof of concept, so don't assume it's a stable build.
+The nastiest bug — a silicon-level interrupt-delivery latch that wedged
+the kernel under heavy fork+exec churn — is root-caused and avoided
+(patch 0031 runs userspace at M-mode; `docs/RUNTIME-WEDGE.md` has the
+full investigation), but other rough edges remain. It's definitely not
+battle-tested.
 
 I worked closely with AI throughout this project (mostly Claude). As I said,
 this was a learning experience never intended to publish. But I got too
@@ -31,7 +34,9 @@ Boot to BusyBox login takes about 7 seconds. From there:
 - BME680 + BMI270 readable via `iio:device*`.
 - Frontpanel WS2812B RGB LEDs via
   `/sys/class/leds/rgb:indicator-{0..3}/` (`brightness` +
-  `multi_intensity`).
+  `multi_intensity`), with kernel LED triggers enabled — `echo
+  heartbeat > .../trigger` for a zero-userspace kernel-alive blinker,
+  `netdev` for a Wi-Fi activity light.
 - Bluetooth LE scan via a small custom HCI helper.
 - Wi-Fi **working** (`wifi-connect "<ssid>" "<psk>"` → associate + DHCP
   + reach the internet), hardware-verified 2026-07-05. The old `wlan0
@@ -40,8 +45,22 @@ Boot to BusyBox login takes about 7 seconds. From there:
   kernel cmdline (IPv6 has no use on this badge). Some esp-hosted
   datapath lifecycle bugs remain latent — see
   [`docs/KNOWN-ISSUES.md`](docs/KNOWN-ISSUES.md).
-- microSD card readable + VFAT-mountable.
-- fbDOOM playable on the panel (`-mb 6`).
+- microSD auto-mounted at `/mnt/sd` at boot (FAT32 + exFAT); config
+  persists in `badge/` on the card — `wifi.conf` auto-connect (followed
+  by a one-shot NTP clock sync; the badge has no RTC), `profile.sh`,
+  `rc.local`, SSH keys — while the rootfs itself stays read-only
+  squashfs. Hot-insert: `mount /mnt/sd`. *(shipped 2026-07-05, pending
+  hardware verification)*
+- SSH in via dropbear (key-only: put an `ssh-ed25519` pubkey in
+  `badge/ssh/authorized_keys` on the card; scp works). *(shipped
+  2026-07-05, pending hardware verification)*
+- busybox vi, colour prompt, shell history, sane `TERM` on the panel
+  console, and a login banner with quick-start hints.
+- fbDOOM playable on the panel (`-mb 6`) — **caveat:** built from a
+  local `package/fbdoom` in the original reference tree that was never
+  vendored into this repo; images built from a fresh clone currently
+  omit it (the defconfig's `BR2_PACKAGE_FBDOOM=y` is dropped silently).
+  See the warning in `BUILDING.md`; vendoring it back is a known TODO.
 - Cold-boot reliability: **~97% first-try boot success** (29/30,
   2026-07-05, after patch 0031 — see next bullet; stepping stones were
   ~60% baseline and ~73% with patch 0030's Bluetooth-init deferral).

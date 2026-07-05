@@ -3,13 +3,15 @@
 #
 # Usage:   wifi-connect [SSID [PSK]]
 #
-# NOMMU-aware: every fork+exec rounds the binary's text+data+bss+stack
-# up to the next power of two, then alloc-as-one-contiguous-region from
-# the buddy heap. busybox is built under 512 KB so each shell-applet
-# load is an order-7 (512 KB) FLAT alloc, and we keep wpa_supplicant
-# under 1 MB so it loads as order-8 (1 MB). Without those size cuts no
-# 2 MB block ever exists at boot in the 32 MB PSRAM heap and the whole
-# script fails on the first wpa_supplicant exec.
+# NOMMU-aware: binfmt_flat tries the byte-precise patch-0010 userspace
+# pool first; only the buddy-heap fallback rounds text+data+bss+stack
+# to the next power of two (then trims to exact pages). busybox measures
+# ~613 KB all-in (2026-07-05, with vi/inetd/ntpd) so a fallback applet exec
+# transiently needs an order-8 (1 MB) contiguous block, and we keep
+# wpa_supplicant under 1 MB so it stays order-8 too. Don't let either
+# grow past 1 MB: no order-9 (2 MB) block ever exists at boot in the
+# 32 MB PSRAM heap and the whole script would fail on the first
+# wpa_supplicant exec.
 #
 # The shell is hush; printf, echo, [, kill, read, case, for, while are
 # builtins (zero fork). The script keeps explicit rc checks + buddyinfo

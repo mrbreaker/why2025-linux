@@ -82,17 +82,30 @@ $T-flthdr overlay/usr/bin/sensorpanel
 
 ## NOMMU sizing
 
-Every fork+exec rounds the binary's text+data+bss+stack up to the next
-power-of-two and allocates as one contiguous block from the buddy heap.
-On this 32 MB PSRAM build:
+binfmt_flat exec allocations try the byte-precise userspace pool (patch
+0010, 10 MB @ 0x49600000) first; only the buddy-heap fallback rounds
+text+data+bss+stack up to the next power of two, transiently grabs that
+block, then trims to exact pages (`CONFIG_NOMMU_INITIAL_TRIM_EXCESS=1`).
+The power-of-two bucket is therefore the *transient contiguous-block*
+requirement on the fallback path, not the resident cost. On this 32 MB
+PSRAM build (all numbers measured with `flthdr`, 2026-07-05):
 
-  - busybox is trimmed to 459 KB → order-7 (512 KB) block.
+  - busybox (with vi/inetd/ntpd from `busybox.fragment`) is 613,216 B
+    all-in → order-8 (1 MB) fallback bucket. Note it silently outgrew
+    the original 459 KB/order-7 trim somewhere along the way; the pool
+    path is why nobody noticed. Never let it cross 1 MB.
   - wpa_supplicant is ~999 KB all-in (text+data+bss+stack per flthdr,
     with BR2_PACKAGE_WPA_SUPPLICANT_AP_SUPPORT off — AP+P2P alone are
     ~760 KB) → order-8 (1 MB) block, with only ~48 KB of headroom.
     Check `flthdr` after any wpa_supplicant or toolchain change.
-  - sensorpanel ~62 KB → order-7 fork allocation.
+  - dropbear (ed25519/curve25519-only trim via
+    `dropbear-localoptions.h`) is 491,744 B all-in with the 16 KB stack
+    `post-build.sh` sets → order-7 (512 KB), ~32 KB headroom.
+    Re-enabling the client programs or the stock algorithm set pushes
+    it past 512 KB.
+  - sensorpanel ~62 KB → order-4 (64 KB) fork allocation.
 
 If you add a new utility, audit its size and round up. Anything over
-1 MB likely won't load on a fragmented heap. See the upstream
+1 MB won't load at all: no order-9 (2 MB) contiguous block ever exists
+at boot on the fragmented heap. See the upstream
 `feedback_nommu_flat_sizing` discussion in the project's design notes.

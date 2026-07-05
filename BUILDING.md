@@ -263,12 +263,19 @@ Gated by `/etc/init.d/S98sensorpanel`, which no-ops without the gate file.
 
 The saved config enables `BR2_PACKAGE_FBDOOM=y` + `BR2_PACKAGE_DOOM_WAD=y`.
 
-> **Warning:** `fbdoom`/`doom-wad` aren't upstream Buildroot packages —
-> local additions in the reference build tree, not yet vendored here.
-> A fresh Buildroot clone drops both options silently at
-> `olddefconfig`. Copy the package directories into the new clone's
-> `package/` (and re-add the `source "package/fbdoom/Config.in"` /
-> `"package/doom-wad/Config.in"` lines to `package/Config.in`) first.
+> **Warning:** `fbdoom` is not an upstream Buildroot package — it was a
+> local addition in the original reference build tree that was never
+> vendored into this repo, and the current reference tree no longer has
+> it either, so **images built today ship without fbDOOM** despite the
+> defconfig lines (both options are dropped silently at `olddefconfig`).
+> `doom-wad` *is* upstream in Buildroot 2025.02, but its `Config.in`
+> gates on chocolate-doom/prboom, so it is dropped along with fbdoom.
+> Restoring this needs a recreated `package/fbdoom/` (Config.in + .mk
+> against github.com/maximevince/fbDOOM, `NOSDL=1`, FLAT toolchain), a
+> `source "package/fbdoom/Config.in"` line in `package/Config.in`, and
+> the doom-wad gate widened with `|| BR2_PACKAGE_FBDOOM` — ideally as a
+> `patches/buildroot/buildroot-tree/` patch. Known TODO; unbuilt drafts
+> exist from the 2026-07-05 session.
 
 After login:
 
