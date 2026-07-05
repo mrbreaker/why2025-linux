@@ -249,27 +249,68 @@ apply. Kept for the record / in case 0031 is ever reverted:
 - Demos that need continuous child-process churn should be ported to a
   single C process (one fork at startup, then long-running).
 
-### Wi-Fi: `wlan0 up` hang — reattributed 2026-07-05, NOT this wedge
+### Wi-Fi: WORKING as of 2026-07-05 (`ipv6.disable=1`) — the hang was IPv6, not the CLIC wedge
 
-**Still non-functional, but it's a different (and ordinary) bug.**
-`ip link set wlan0 up` on its own hangs the badge within ~30–50 s on
-every attempt — including on the 0031 M-mode kernel that survives every
-CLIC-wedge reproducer. The discriminating fact was always there: every
-reproduction reports the same Saved PC `0x48042f16`, which is *kernel*
-text — `detach_if_pending` (kernel/time/timer.c). The CPU is stuck in
-an IRQs-off infinite loop walking a **corrupted timer-wheel list**
-under the timer base lock (console dead because IRQs are off; MWDT
-auto-recovers). A delivery latch would leave execution running at
-random PCs, not parked on one list-walk instruction.
+**Wi-Fi is functional.** Hardware-verified on the shipping kernel:
+`wifi-connect "<ssid>" "<psk>"` associates, udhcpc gets a lease, `ping`
+reaches the internet, and a 4-minute ping + fork-churn soak survives
+(associated, ~420 ping iterations, no wedge). The fix is one cmdline
+token: **`ipv6.disable=1`** in `CONFIG_CMDLINE` (`patches/linux/kernel.config`).
 
-Suspects: timer misuse somewhere in the esp-hosted datapath activated
-by ifup — stack timers from `schedule_timeout` in the cmd path, the
-netdev qdisc/TX watchdog, or a freed-while-pending timer (the 0008
-series has known cmd-node lifecycle bugs). Next step: a diagnostic
-build with `CONFIG_DEBUG_LIST=y` + `CONFIG_DEBUG_OBJECTS_TIMERS=y` and
-one `wlan0 up` reproduction — the splat should name the culprit. Until
-then `wifi-connect` still dies at its `ip link set … up` step; the
-interface enumerates fine (real MAC, backlight-over-SPI works).
+**Root cause of the old `wlan0 up` hang — an IPv6 timer, not this
+project's CLIC erratum.** `ip link set wlan0 up` hung the badge within
+~30–50 s on every attempt, *including on the 0031 M-mode kernel that
+survives every CLIC-wedge reproducer*. The discriminators:
+
+- Saved PC is *kernel* text every time (`rb_erase` / `detach_if_pending`,
+  `kernel/time/timer.c`) with IRQs locally off inside the timer base
+  lock — a genuine corrupted-node spin/fault, not the delivery latch
+  (which parks in userspace with all interrupts dead). This is why
+  M-mode (patch 0031) correctly did *not* fix it.
+- `sysctl`-off / `ipv6.disable=1` on `wlan0 up` → **survives 12 min**
+  (baseline wedges every time in under a minute).
+- A `DEBUG_LIST` + `DEBUG_OBJECTS` build (which perturbs heap layout and
+  timing) did **not** wedge and reached full working Wi-Fi — a classic
+  heisenbug, consistent with a heap/timer-node corruption rather than a
+  logic error.
+
+In 6.18 `MAX_RTR_SOLICITATIONS = -1` (unlimited, RFC 7559), so `wlan0`'s
+`idev->rs_timer` (heap `inet6_dev`) re-arms forever with doubling
+backoff and is queued in the timer wheel across exactly the hang window.
+Disabling IPv6 removes that victim. The *writer* that corrupts the node
+was not pinned to a single line (the esp-hosted driver was audited and
+exonerated for the plain-ifup case: RX/TX are bounded and no command
+traffic flows on a bare ifup — see the hardening note below); on this
+NOMMU kernel with hand-rolled ROM cache-sync thunks, an out-of-slice
+stray write is the leading remaining theory. `ipv6.disable=1` is a
+clean, complete workaround and IPv6 has no use on this badge, so this is
+the shipped state rather than a stopgap.
+
+**Confirmed-latent esp-hosted bugs (hardening TODO, NOT the hang).** A
+2026-07-05 four-path audit + adversarial verification of patch 0008's
+driver confirmed several real lifecycle bugs, all gated on conditions
+that do not occur in normal operation (teardown, a second slave bootup
+event, a GFP_ATOMIC cmd-node alloc failure, or a `write_packet` failure
+— which only happens with the datapath closed). They are documented
+here rather than shipped because they cannot be exercised without fault
+injection, and the command path is boot-race-sensitive (touching it
+unverified is exactly the risk the boot-window batch was deferred for):
+
+- `esp_cmd.c` `esp_cmd_work` send-failure path recycles a cmd node while
+  a waiter still owns it → the same node can reach `cmd_free_queue`
+  twice (double `list_add`). Fix: on send failure set
+  `cmd_resp = cmd_node->cmd_code` and `wake_up_interruptible` with
+  `cur_cmd` still set; let the single waiter release + recycle.
+- `esp_cmd.c` `reset_cmd_node` never clears `in_cmd_queue`, so a later
+  reuse of that pool slot can `list_del` a node no longer on the pending
+  queue (poisoned-pointer `list_del`). Fix: clear the flag after the
+  `list_del`.
+- `esp_bt.c` `esp_bt_send_frame` double-frees on `hdev->send` failure
+  (both the realloc and skb_push paths free a buffer the HCI core also
+  frees). Fix: honor the "core frees on <0 return" contract.
+- `esp_bt.c` `hci_register_dev` failure leaves `adapter->hcidev`
+  dangling; `main.c` `esp_remove_card` deinits BT before flushing the RX
+  workqueue (teardown UAF).
 
 ## Boot freeze in the display + backlight bring-up window
 

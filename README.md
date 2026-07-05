@@ -33,11 +33,13 @@ Boot to BusyBox login takes about 7 seconds. From there:
   `/sys/class/leds/rgb:indicator-{0..3}/` (`brightness` +
   `multi_intensity`).
 - Bluetooth LE scan via a small custom HCI helper.
-- Wi-Fi **currently non-functional**: the `wlan0` interface enumerates
-  (C6's real MAC, esp-hosted-NG over SPI), but bringing it up hangs the
-  kernel within ~30–50 s. Reattributed 2026-07-05: it is a timer-wheel
-  list corruption in the datapath (an ordinary, debuggable bug), *not*
-  the CLIC erratum. See [`docs/KNOWN-ISSUES.md`](docs/KNOWN-ISSUES.md).
+- Wi-Fi **working** (`wifi-connect "<ssid>" "<psk>"` → associate + DHCP
+  + reach the internet), hardware-verified 2026-07-05. The old `wlan0
+  up` hang was an IPv6 timer (`rs_timer`) corrupting the timer wheel,
+  not the CLIC erratum; it is disabled with `ipv6.disable=1` on the
+  kernel cmdline (IPv6 has no use on this badge). Some esp-hosted
+  datapath lifecycle bugs remain latent — see
+  [`docs/KNOWN-ISSUES.md`](docs/KNOWN-ISSUES.md).
 - microSD card readable + VFAT-mountable.
 - fbDOOM playable on the panel (`-mb 6`).
 - Cold-boot reliability: **~97% first-try boot success** (29/30,

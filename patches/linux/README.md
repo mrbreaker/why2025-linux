@@ -62,7 +62,10 @@ and the boot-reliability campaign in `docs/KNOWN-ISSUES.md`.
     `MAGIC_SYSRQ=y` (incl. `MAGIC_SYSRQ_SERIAL`), `WQ_WATCHDOG=y`,
     `DYNAMIC_DEBUG=y`, `EXT4_FS=n` (root is squashfs, microSD is
     VFAT-only — reclaims partition budget), `INITRAMFS_SOURCE=`
-    (squashfs root), `CMDLINE_FORCE=y` with `idle=poll`.
+    (squashfs root), `CMDLINE_FORCE=y` with `idle=poll ipv6.disable=1`
+    (the latter added 2026-07-05 — `wlan0 up` armed an IPv6 `rs_timer`
+    that got corrupted in the timer wheel and hung the kernel; disabling
+    IPv6 makes Wi-Fi work, see `docs/KNOWN-ISSUES.md`).
     Since the 0019 watchdog work: `WATCHDOG=y` + `ESP32P4_WDT=y`
     (kernel-fed MWDT dead-man's switch + restart handler) and
     `PANIC_TIMEOUT=5` (oops/panic reboots via that handler instead of
