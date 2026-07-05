@@ -1,0 +1,102 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# S15sdcard — mount the microSD (if present) and apply persisted config
+# from /mnt/sd/badge/. The rootfs is a read-only squashfs: config is
+# read from the card in place, never copied into /etc.
+#
+# The card enumerates ~3.7 s into boot (broken-cd = ~1 s kernel poll),
+# after inittab's `mount -a`, so a plain fstab entry can't automount it.
+#
+# NOMMU: hush has no SH_STANDALONE/NOFORK, so every non-builtin below
+# (sleep, mount, mkdir, cp) is a fork+exec of the ~580 KB busybox FLAT.
+# Poll in whole-second steps, background the entire chain so a cardless
+# boot is never delayed, and keep the worst case to ~15 forks — the
+# same backgrounded-poll shape S98sensorpanel already uses.
+#
+# Persisted config layout on the card (all optional):
+#   badge/wifi.conf     hush-sourceable: SSID='...' and PSK='...'
+#                       -> wifi-connect once wlan0 appears, then a
+#                       one-shot ntpd sync (no RTC; clock boots at 1970)
+#   badge/dropbear/     dropbear_ed25519_host_key -> stable SSH host key
+#   badge/ssh/          authorized_keys (ssh-ed25519 only; RSA/ECDSA are
+#                       compiled out) via the /root/.ssh symlink
+#   badge/profile.sh    sourced by login shells (etc/profile.d/sdcard.sh)
+#   badge/rc.local      sourced as root at the end of this chain.
+#                       Deliberate: whoever holds the card owns the badge.
+
+case "$1" in
+    start|"") ;;
+    stop)
+        umount /mnt/sd 2>/dev/null
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+
+(
+    i=0
+    while [ ! -b /dev/mmcblk0 ] && [ $i -lt 12 ]; do
+        sleep 1
+        i=$((i+1))
+    done
+    if [ ! -b /dev/mmcblk0 ]; then
+        echo "no card" > /tmp/sd.log
+        exit 0
+    fi
+
+    # Let the partition scan land, then prefer p1; fall back to a
+    # partitionless (superfloppy) card.
+    sleep 1
+    dev=/dev/mmcblk0p1
+    [ -b "$dev" ] || dev=/dev/mmcblk0
+
+    # vfat via the fstab entry when it's p1; exfat fallback either way
+    # (exfat rejects the vfat-only utf8=/flush= options).
+    if [ "$dev" = /dev/mmcblk0p1 ]; then
+        mount /mnt/sd >/dev/null 2>&1 ||
+            mount -t exfat -o noatime "$dev" /mnt/sd >/dev/null 2>&1
+    else
+        mount -t vfat -o utf8=1,flush,noatime "$dev" /mnt/sd >/dev/null 2>&1 ||
+            mount -t exfat -o noatime "$dev" /mnt/sd >/dev/null 2>&1
+    fi
+    if [ $? -ne 0 ]; then
+        # Not vfat/exfat (e.g. an ext4-formatted card) — boot cardless.
+        echo "mount failed: $dev is not vfat or exfat" > /tmp/sd.log
+        exit 0
+    fi
+    echo "mounted $dev" > /tmp/sd.log
+
+    # Persistent SSH host key: copy onto the tmpfs key dir before the
+    # first connection generates a throwaway one (see S85dropbear).
+    if [ -f /mnt/sd/badge/dropbear/dropbear_ed25519_host_key ]; then
+        mkdir -p /var/run/dropbear
+        cp /mnt/sd/badge/dropbear/dropbear_ed25519_host_key \
+            /var/run/dropbear/ 2>/dev/null
+    fi
+
+    # Wi-Fi auto-connect + one-shot time sync. wifi-connect itself
+    # rejects " and \ in either value (no fork-free escaping in hush).
+    if [ -f /mnt/sd/badge/wifi.conf ]; then
+        SSID=""
+        PSK=""
+        . /mnt/sd/badge/wifi.conf
+        if [ -n "$SSID" ]; then
+            i=0
+            while [ ! -d /sys/class/net/wlan0 ] && [ $i -lt 20 ]; do
+                sleep 1
+                i=$((i+1))
+            done
+            if [ -d /sys/class/net/wlan0 ]; then
+                /usr/bin/wifi-connect "$SSID" "$PSK" >/tmp/wifi-sd.log 2>&1 &&
+                    ntpd -n -q -p pool.ntp.org >/tmp/ntp.log 2>&1
+            fi
+        fi
+    fi
+
+    # Catch-all root hook; sourced (zero extra fork).
+    [ -f /mnt/sd/badge/rc.local ] && . /mnt/sd/badge/rc.local
+) &
+
+exit 0
