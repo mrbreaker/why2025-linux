@@ -65,6 +65,22 @@ Both share the i2c-gpio bus 0:
     that triggers `driver_deferred_probe_trigger()` 5 s after the first
     `request_firmware -ENOENT` so the upload happens after squashfs mounts.
 
+## LEDs
+
+  - **Four chained WS2812B RGB LEDs, data on HP GPIO 4** — driven by the
+    patch-0032 bit-bang driver as
+    `/sys/class/leds/rgb:indicator-{0..3}/` (`brightness`,
+    `multi_intensity`, and `trigger` — timer/heartbeat/netdev/pattern).
+  - **Physically they are NOT on the badge**: GPIO 4 only reaches the
+    outside world through the pogo-pin pads, and the LEDs live on the
+    WHY2025 *frontpanel addon* attached there. The carrier board's own
+    six WS2812B footprints are **unpopulated** (schematic sheet 1). No
+    frontpanel attached = the driver works, sysfs writes succeed, and
+    nothing lights up anywhere.
+  - GPIO 4 is also broken out on the pogo pads directly, so any
+    external WS2812B chain wired there works too (the DTS `num-leds`
+    property caps the chain length; default 4).
+
 ## Storage
 
   - **microSD** on `dw_mmc` slot 0 (mmcblk0). Multi-slot support patched
