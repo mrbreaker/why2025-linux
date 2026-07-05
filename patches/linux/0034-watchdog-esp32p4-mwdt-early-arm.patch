@@ -1,0 +1,38 @@
+--- a/drivers/watchdog/esp32p4_wdt.c
++++ b/drivers/watchdog/esp32p4_wdt.c
+@@ -218,8 +218,34 @@
+ 		.of_match_table = esp32p4_wdt_of_match,
+ 	},
+ };
+-module_platform_driver(esp32p4_wdt_driver);
+ 
++/*
++ * Register at subsys_initcall, not device_initcall: OF platform devices
++ * exist from arch_initcall_sync onward, so probing here arms the MWDT
++ * before any device_initcall driver gets a chance to hang the boot.
++ * Concretely, drivers/misc links ahead of drivers/watchdog, so at
++ * device_initcall level esp32-c6-kick probes first — and a freeze
++ * inside its probe (hardware-captured 2026-07-05 at ~1.4 s) left the
++ * watchdog unarmed and the badge hard-dead until a power cycle. The
++ * probe has no dependencies beyond MMIO (fixed 40 MHz XTAL clocking),
++ * and the watchdog core only initializes at subsys_initcall_sync:
++ * watchdog_register_device() parks on its deferred-registration list
++ * until then (the pattern watchdog_core.c documents for early-initcall
++ * drivers), leaving the already-armed hardware unfed for that gap —
++ * microseconds against a 30 s timeout.
++ */
++static int __init esp32p4_wdt_init(void)
++{
++	return platform_driver_register(&esp32p4_wdt_driver);
++}
++subsys_initcall(esp32p4_wdt_init);
++
++static void __exit esp32p4_wdt_exit(void)
++{
++	platform_driver_unregister(&esp32p4_wdt_driver);
++}
++module_exit(esp32p4_wdt_exit);
++
+ MODULE_AUTHOR("WHY2025 Linux port");
+ MODULE_DESCRIPTION("ESP32-P4 Timer Group watchdog");
+ MODULE_LICENSE("GPL");
