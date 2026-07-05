@@ -12,10 +12,14 @@
  *                  grab stays here, any key kills it and returns
  *   DOOM           only listed when /usr/bin/fbdoom exists; the grab
  *                  is RELEASED so fbdoom gets tty input, rejoined on
- *                  exit (fbdoom's own exit key is Backspace)
+ *                  exit (fbdoom's own exit key is Backspace). The
+ *                  menu's 1 MB shadow is munmap'd for the duration:
+ *                  fbdoom's -mb 4 zone comes from the same pool, and
+ *                  an explicit -mb N is single-shot (fbdoom sets
+ *                  min_ram = default_ram — no auto-shrink).
  *   Wi-Fi status   operstate + MAC from sysfs, any key returns
- *   LED demo       toggles heartbeat trigger on the four frontpanel
- *                  WS2812Bs (kernel LED triggers, patch 0033 config)
+ *   BLE advertise  toggles ble_adv (broadcasts the hostname so other
+ *                  badges' ble_scan can see it); left running on quit
  *   Backlight      cycles display brightness 76 -> 150 -> 255 -> 25
  *   Quit / Esc     ungrab + exit (fbcon repaints on next console
  *                  output; hit Enter at the shell)
@@ -281,29 +285,24 @@ static int wait_key(void)
 
 /* ---- Screens ---- */
 
-static const char *led_trigger_path(int i)
+static int ble_pid = -1;
+
+/*
+ * ble_adv enables BT itself (bt_enable knob) and parks until killed;
+ * first start takes a few seconds while hci0 comes up. Deliberately
+ * NOT reaped on quit — advertising keeps running, same as `ble_adv &`.
+ */
+static void toggle_ble_adv(void)
 {
-	static char p[64];
-	const char *base = "/sys/class/leds/rgb:indicator-";
-	int n = 0;
+	char *argv[] = { "/usr/bin/ble_adv", 0 };
 
-	while (base[n]) { p[n] = base[n]; n++; }
-	p[n++] = (char)('0' + i);
-	const char *tail = "/trigger";
-	int k = 0;
-	while (tail[k]) p[n++] = tail[k++];
-	p[n] = 0;
-	return p;
-}
-
-static int leds_on;
-
-static void toggle_leds(void)
-{
-	leds_on = !leds_on;
-	for (int i = 0; i < 4; i++)
-		write_sysfs_str(led_trigger_path(i),
-				leds_on ? "heartbeat" : "none");
+	if (ble_pid > 0) {
+		kill(ble_pid, SIGTERM);
+		waitpid(ble_pid, 0, 0);
+		ble_pid = -1;
+		return;
+	}
+	ble_pid = spawn(argv);
 }
 
 static const int bl_steps[] = { 76, 150, 255, 25 };
@@ -373,18 +372,34 @@ static void run_doom(void)
 {
 	char *argv[] = { "/usr/bin/fbdoom",
 			 "-iwad", "/usr/share/games/doom/doom1.wad",
-			 "-mb", "6", 0 };
+			 "-mb", "4", 0 };
 	int pid, status;
 
 	/* fbdoom reads the tty: hand the keypad back while it runs.
-	 * Its own exit key is Backspace. */
-	ioctl(ev_fd, EVIOCGRAB, 0);
+	 * Its own exit key is Backspace. Also hand our 1 MB shadow back
+	 * to the pool for the duration — fbdoom's contiguous -mb 4 zone
+	 * comes from the same place, and an explicit -mb is single-shot
+	 * (no auto-shrink). */
 	fill_rect(0, 0, fb_w, fb_h, 0);
 	blit();
+	munmap(fb, fb_bytes);
+	fb = NULL;
+	ioctl(ev_fd, EVIOCGRAB, 0);
 	pid = spawn(argv);
 	if (pid >= 0)
 		waitpid(pid, &status, 0);
 	ioctl(ev_fd, EVIOCGRAB, 1);
+	fb = (uint16_t *)mmap(NULL, fb_bytes, PROT_READ | PROT_WRITE,
+			      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (fb == (uint16_t *)-1) {
+		/* Pool couldn't hand the shadow back — exit cleanly to
+		 * the console rather than draw through a bad pointer. */
+		say("launcher: shadow re-mmap failed after doom\n");
+		ioctl(ev_fd, EVIOCGRAB, 0);
+		close(ev_fd);
+		close(fb_fd);
+		_exit(1);
+	}
 }
 
 /* ---- Menu ---- */
@@ -393,7 +408,7 @@ struct entry {
 	const char *label;
 	int id;
 };
-enum { E_SENSORS, E_DOOM, E_WIFI, E_LEDS, E_BACKLIGHT, E_QUIT };
+enum { E_SENSORS, E_DOOM, E_WIFI, E_BLEADV, E_BACKLIGHT, E_QUIT };
 
 int main(void)
 {
@@ -441,7 +456,7 @@ int main(void)
 	if (have_doom)
 		entries[n_entries++] = (struct entry){ "DOOM", E_DOOM };
 	entries[n_entries++] = (struct entry){ "Wi-Fi status", E_WIFI };
-	entries[n_entries++] = (struct entry){ "LED demo", E_LEDS };
+	entries[n_entries++] = (struct entry){ "BLE advertise", E_BLEADV };
 	entries[n_entries++] = (struct entry){ "Backlight", E_BACKLIGHT };
 	entries[n_entries++] = (struct entry){ "Quit", E_QUIT };
 
@@ -455,12 +470,13 @@ int main(void)
 
 		int y = 120;
 		for (int i = 0; i < n_entries; i++) {
-			if (i == sel) {
+			uint16_t c = (i == sel) ? COL_SEL : COL_ITEM;
+
+			if (i == sel)
 				fill_rect(24, y - 10, fb_w - 48, 52, COL_SELBG);
-				draw_str(40, y, entries[i].label, 4, COL_SEL);
-			} else {
-				draw_str(40, y, entries[i].label, 4, COL_ITEM);
-			}
+			int xe = draw_str(40, y, entries[i].label, 4, c);
+			if (entries[i].id == E_BLEADV && ble_pid > 0)
+				draw_str(xe + 24, y + 8, "[on]", 2, COL_OK);
 			y += 70;
 		}
 		draw_str(24, fb_h - 60,
@@ -481,7 +497,7 @@ int main(void)
 			case E_SENSORS:   run_sensorpanel(); break;
 			case E_DOOM:      run_doom(); break;
 			case E_WIFI:      wifi_screen(); break;
-			case E_LEDS:      toggle_leds(); break;
+			case E_BLEADV:    toggle_ble_adv(); break;
 			case E_BACKLIGHT: cycle_backlight(); break;
 			case E_QUIT:      goto out;
 			}

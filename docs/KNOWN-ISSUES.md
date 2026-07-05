@@ -486,7 +486,7 @@ fbcon at median 5.54 s (was 7.24) and video-on at median 5.69 s (was
 10.0). The campaign's failures were NOT in this patch's window: 5×
 `mmcblk0: p1` at 3.7 s (below), 1× post-display at ~5.6 s (comparable
 to the old residual rate), 1× capture artifact. Fn+Esc sleep/wake
-spot-check still pending (wake latency drops 3 s → ~0).
+user-verified 2026-07-05 (wake latency drops 3 s → ~0).
 
 **`mmcblk0: p1` freeze class, sharpened (2026-07-05):** the same
 30-cycle warm campaign — the first one run with an SD card confirmed

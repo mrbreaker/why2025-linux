@@ -125,4 +125,36 @@ fi
 
 dump_buddy 'pre-udhcpc'
 printf '[wifi] requesting DHCP lease...\n'
-exec udhcpc -i "$IFACE" -n -q -t 30 -A 3
+# Not exec'd (as it used to be): the script stays resident (~580 KB
+# pool, post-boot window) so it can offer to persist the credentials
+# after a successful lease. udhcpc -n -q still exits once the lease is
+# obtained, same semantics as before.
+udhcpc -i "$IFACE" -n -q -t 30 -A 3
+rc=$?
+[ "$rc" -eq 0 ] || exit "$rc"
+
+# Offer to persist working credentials for boot-time auto-connect
+# (S15sdcard sources /mnt/sd/badge/wifi.conf). Interactive runs only:
+# [ -t 0 ] is a builtin test, and the boot-time S15sdcard invocation
+# (stdin not a tty) must never block on a prompt. [ -w /mnt/sd ] is
+# only true with a card mounted rw (the squashfs mountpoint under it
+# is read-only). Values containing a single quote are never written —
+# they would break the hush-sourceable quoting on read-back.
+if [ -t 0 ] && [ -w /mnt/sd ] && [ ! -f /mnt/sd/badge/wifi.conf ]; then
+    case "$SSID$PSK" in
+    *"'"*) ;;
+    *)
+        printf 'Save to SD card for auto-connect at boot? [y/N] '
+        read -r yn
+        case "$yn" in
+        y|Y)
+            mkdir -p /mnt/sd/badge
+            printf "SSID='%s'\nPSK='%s'\n" "$SSID" "$PSK" \
+                > /mnt/sd/badge/wifi.conf
+            printf '[wifi] saved to /mnt/sd/badge/wifi.conf\n'
+            ;;
+        esac
+        ;;
+    esac
+fi
+exit 0

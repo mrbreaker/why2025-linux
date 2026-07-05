@@ -274,21 +274,24 @@ The saved config enables `BR2_PACKAGE_FBDOOM=y` + `BR2_PACKAGE_DOOM_WAD=y`.
 After login:
 
 ```sh
-fbdoom -iwad /usr/share/games/doom/doom1.wad -mb 6
+fbdoom -iwad /usr/share/games/doom/doom1.wad -mb 4
 ```
 
-(or pick DOOM from the `launcher` menu.)
+(or pick DOOM from the `launcher` menu, which also passes `-mb 4` and
+hands its own 1 MB shadow buffer back to the pool for the duration.)
 
 Takes over `/dev/fb0` — fbcon stops drawing until it exits. Keypad:
 F1..F6 + arrows (see the DTS keymap for the full set), Backspace exits.
 
-Z-zone sizing: fbdoom auto-shrinks until the allocation fits the
-patch-0010 NOMMU pool ("Unable to allocate N MiB of RAM for zone" lines
-are it stepping down, not a failure). With the 2026-07-05 userspace
-(two ~600 KB busybox gettys + inetd resident) the practical ceiling is
-~4 MB, down from the historical 6; pass `-mb 4` to skip the retry
-noise. `Z_Init: alloc failed` at the end of the retries means the pool
-is genuinely exhausted — check what else is resident.
+Z-zone sizing: **an explicit `-mb N` is single-shot** — fbdoom sets
+`min_ram = default_ram`, so one failed allocation prints
+`Unable to allocate N-1 MiB of RAM for zone` and exits; there is no
+auto-shrink (and the no-flag defaults are compiled in as 6/6, so plain
+`fbdoom` behaves the same). With the 2026-07-05 userspace (two ~600 KB
+busybox gettys + inetd resident, pool fragmentation) a contiguous 6 MB
+hole no longer exists; `-mb 4` is the verified working size (hardware,
+2026-07-05: 4 MB zone allocates, Doom runs). If even `-mb 4` fails,
+check what else is resident in the 10 MB pool.
 
 ## Monitoring
 

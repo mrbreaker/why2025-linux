@@ -65,10 +65,9 @@ bring-up rework). From there:
   end-to-end pending.
 - busybox vi, colour prompt, shell history, sane `TERM` on the panel
   console, and a login banner with quick-start hints.
-- `launcher` — a keypad-driven menu on the panel (sensor panel, DOOM
-  when present, Wi-Fi status, LED demo, backlight), so the badge is
-  usable standalone without a serial cable. *(shipped 2026-07-05,
-  pending hardware verification)*
+- `launcher` — a keypad-driven menu on the panel (sensor panel, DOOM,
+  Wi-Fi status, BLE-advertise toggle, backlight), so the badge is
+  usable standalone without a serial cable.
 - fbDOOM playable on the panel (`-mb 6`), also launchable from the
   `launcher` menu. (Vendored via
   `patches/buildroot/buildroot-tree/0002` after the original local

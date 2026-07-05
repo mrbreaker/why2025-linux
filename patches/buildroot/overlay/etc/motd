@@ -5,7 +5,8 @@ Quick start:
   ssh in: ed25519 pubkey in SD badge/ssh/authorized_keys (key-only)
   ssh out: ssh user@host (also scp; ed25519-host-key servers only)
   echo 150 > /sys/class/backlight/backlight/brightness    0..255 (boot: 76)
-  echo heartbeat > /sys/class/leds/rgb:indicator-0/trigger frontpanel LEDs
+  echo heartbeat > /sys/class/leds/rgb:indicator-0/trigger
+                                   LEDs (on the frontpanel addon only)
   launcher                         panel menu (arrows + enter, esc quits)
   sensorpanel | ble_scan | ble_adv&  demos; Fn+Esc = display sleep
 Rootfs is read-only squashfs: write under /tmp (RAM) or /mnt/sd.
