@@ -26,7 +26,10 @@ small ESP-IDF boot shim copies a flat `Image` from flash into 32 MB of
 HEX PSRAM at `0x48000000` and jumps to it. The 8 MB rootfs is a
 squashfs mounted via `mtd-rom` directly out of flash.
 
-Boot to BusyBox login takes about 7 seconds. From there:
+Boot to a login prompt on the panel takes about 5.5 seconds
+(hardware-measured median across 23 boots: fbcon at 5.54 s, full video
+at 5.69 s — down from ~7.2 s/10 s before the 2026-07-05 display
+bring-up rework). From there:
 
 - 720×720 DSI panel with `fbcon`, full keypad mapped to evdev.
 - Fn+Esc puts the badge display to sleep (display + keyboard
@@ -70,17 +73,18 @@ Boot to BusyBox login takes about 7 seconds. From there:
   `launcher` menu. (Vendored via
   `patches/buildroot/buildroot-tree/0002` after the original local
   package was lost — fresh clones build it again as of 2026-07-05.)
-- Boot reliability: **~97% first-try success on warm resets** (29/30,
-  2026-07-05, after patch 0031; stepping stones were ~60% baseline and
-  ~73% with patch 0030's Bluetooth-init deferral). **True cold boots
-  (cable plug-in — both chips freshly powered) are markedly worse**:
-  a live-captured 2026-07-05 session saw most cold boots freeze, the
-  biggest killer being the deferred BT-init burst at ~21 s against a
-  cold C6. Two mitigations shipped (patch 0034 arms the watchdog
-  before any fragile probe runs, so no freeze is ever hard-dead;
-  patch 0035 makes Bluetooth HCI registration opt-in at runtime,
-  removing BT from boot entirely) — pending a physical power-cycle
-  campaign. See `docs/KNOWN-ISSUES.md` "Cold boots".
+- Boot reliability: the watchdog now guarantees the badge always
+  reaches login (patch 0034 arms it before any fragile probe — no
+  freeze is ever hard-dead), and the cold-boot killer is gone (patch
+  0035: the Bluetooth HCI burst that wedged cable-plug boots at ~21 s
+  is opt-in at runtime now; a post-fix hand campaign saw ~7/9 cold
+  boots clean vs ~1/6 before). First-try rates measured 2026-07-05:
+  warm resets 23/30 with the SD card inserted (the residual freezes
+  are one pre-existing class at the SD partition-scan line, possibly
+  card-correlated — see `docs/KNOWN-ISSUES.md`; the earlier 29/30 was
+  measured with card state unrecorded), all failures
+  watchdog-recovered. History: ~60% baseline, ~73% with patch 0030,
+  ~97% with patch 0031.
 - The CLIC interrupt-delivery latch that used to wedge the kernel
   under multi-process churn (a silicon-level erratum, root-caused at
   the register level) is **avoided as of patch 0031**: userspace runs

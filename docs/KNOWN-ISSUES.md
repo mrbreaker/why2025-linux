@@ -474,19 +474,28 @@ paths), which is a larger change to the command-channel's locking than
 the ownership-check fix — deferred until it can be validated with a real
 boot-cycle load test.
 
-**Timing shift in this window (2026-07-05, patch 0033, pending hardware
-verification):** the DSI glue's two bring-up timers were reworked —
-`fbdev_setup_work` now fires 1 s after probe (~4.5 s, was ~6.5 s) and
+**Timing shift in this window (2026-07-05, patch 0033 —
+hardware-verified same day):** the DSI glue's two bring-up timers were
+reworked — `fbdev_setup_work` now fires 1 s after probe and
 `dpi_enable_work` is armed deterministically from an
-`atomic_commit_tail` hook instead of a fixed 3 s timer (video-on ~5.3 s,
-was ~10.0 s). This moves the fb0/fbcon allocations earlier into the
-deferred-probe window this section describes. Any future freeze
-campaign must (a) run 30+ cycles post-0033, and (b) assert the
-`[drm] fb0` / `Console: switching to colour frame buffer` lines appear
-in every successful cycle — the fbdev shadow-fb `vzalloc(1 MB)` failure
-mode is silent (boot completes, panel stays on the logo/blank, only
-serial works). Also spot-check Fn+Esc sleep/wake: wake latency drops
-3 s → ~0 with the commit-tail hook.
+`atomic_commit_tail` hook instead of a fixed 3 s timer. 30-cycle
+freezetest (warm RTS, SD card inserted): every one of the 23 successful
+cycles carried the fbcon-switch, `[drm] fb0`, and GDMA-armed lines —
+the silent shadow-fb `vzalloc(1 MB)` failure mode never fired — with
+fbcon at median 5.54 s (was 7.24) and video-on at median 5.69 s (was
+10.0). The campaign's failures were NOT in this patch's window: 5×
+`mmcblk0: p1` at 3.7 s (below), 1× post-display at ~5.6 s (comparable
+to the old residual rate), 1× capture artifact. Fn+Esc sleep/wake
+spot-check still pending (wake latency drops 3 s → ~0).
+
+**`mmcblk0: p1` freeze class, sharpened (2026-07-05):** the same
+30-cycle warm campaign — the first one run with an SD card confirmed
+inserted — hit this class 5/30 times (vs 1/30 in the 0031 campaign,
+card state unrecorded). All watchdog-recovered. The card-presence
+correlation is now the leading hypothesis; a card-out 30-cycle
+campaign would settle it. Freezes at exactly the partition-scan line
+predate all 2026-07-05 changes (nothing new runs at 3.7 s: fbdev work
+fires at ~4.4 s, S15sdcard forks at rcS ~4 s+).
 
 ## Cold boots are far less reliable than warm resets
 
