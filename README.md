@@ -63,11 +63,10 @@ Boot to BusyBox login takes about 7 seconds. From there:
   when present, Wi-Fi status, LED demo, backlight), so the badge is
   usable standalone without a serial cable. *(shipped 2026-07-05,
   pending hardware verification)*
-- fbDOOM playable on the panel (`-mb 6`) — **caveat:** built from a
-  local `package/fbdoom` in the original reference tree that was never
-  vendored into this repo; images built from a fresh clone currently
-  omit it (the defconfig's `BR2_PACKAGE_FBDOOM=y` is dropped silently).
-  See the warning in `BUILDING.md`; vendoring it back is a known TODO.
+- fbDOOM playable on the panel (`-mb 6`), also launchable from the
+  `launcher` menu. (Vendored via
+  `patches/buildroot/buildroot-tree/0002` after the original local
+  package was lost — fresh clones build it again as of 2026-07-05.)
 - Boot reliability: **~97% first-try success on warm resets** (29/30,
   2026-07-05, after patch 0031; stepping stones were ~60% baseline and
   ~73% with patch 0030's Bluetooth-init deferral). **True cold boots

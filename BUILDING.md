@@ -263,34 +263,32 @@ Gated by `/etc/init.d/S98sensorpanel`, which no-ops without the gate file.
 
 The saved config enables `BR2_PACKAGE_FBDOOM=y` + `BR2_PACKAGE_DOOM_WAD=y`.
 
-> **Warning:** `fbdoom` is not an upstream Buildroot package — it was a
-> local addition in the original reference build tree that was never
-> vendored into this repo, and the current reference tree no longer has
-> it either, so **images built today ship without fbDOOM** despite the
-> defconfig lines (both options are dropped silently at `olddefconfig`).
-> `doom-wad` *is* upstream in Buildroot 2025.02, but its `Config.in`
-> gates on chocolate-doom/prboom, so it is dropped along with fbdoom.
-> Restoring this needs a recreated `package/fbdoom/` (Config.in + .mk
-> against github.com/maximevince/fbDOOM, `NOSDL=1`, FLAT toolchain), a
-> `source "package/fbdoom/Config.in"` line in `package/Config.in`, and
-> the doom-wad gate widened with `|| BR2_PACKAGE_FBDOOM` — ideally as a
-> `patches/buildroot/buildroot-tree/` patch. Known TODO; unbuilt drafts
-> exist from the 2026-07-05 session.
+> **Note:** `fbdoom` is not an upstream Buildroot package — it is
+> vendored by `patches/buildroot/buildroot-tree/0002-package-fbdoom-new-
+> package.patch` (applied by the buildroot-tree patch loop above), which
+> also widens upstream `doom-wad`'s Config.in gate so the shareware WAD
+> installs alongside. If either defconfig option silently disappears at
+> `olddefconfig`, the buildroot-tree patches weren't applied to your
+> Buildroot clone.
 
 After login:
 
 ```sh
-# 6 MB Z-zone — the largest that fits the nommu-userspace-pool reserved
-# by patch 0010. -iwad path varies; check /usr/share/games/doom/ first.
 fbdoom -iwad /usr/share/games/doom/doom1.wad -mb 6
 ```
+
+(or pick DOOM from the `launcher` menu.)
 
 Takes over `/dev/fb0` — fbcon stops drawing until it exits. Keypad:
 F1..F6 + arrows (see the DTS keymap for the full set), Backspace exits.
 
-`Z_Init: alloc failed` or `mmap failed` at startup means NOMMU pool
-exhaustion — `-mb 6` is the ceiling here; try `-mb 2` on more
-constrained builds.
+Z-zone sizing: fbdoom auto-shrinks until the allocation fits the
+patch-0010 NOMMU pool ("Unable to allocate N MiB of RAM for zone" lines
+are it stepping down, not a failure). With the 2026-07-05 userspace
+(two ~600 KB busybox gettys + inetd resident) the practical ceiling is
+~4 MB, down from the historical 6; pass `-mb 4` to skip the retry
+noise. `Z_Init: alloc failed` at the end of the retries means the pool
+is genuinely exhausted — check what else is resident.
 
 ## Monitoring
 

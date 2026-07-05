@@ -1,0 +1,114 @@
+package/fbdoom: new package (NOSDL framebuffer Doom)
+
+fbDOOM (github.com/maximevince/fbDOOM) is the badge's Doom port:
+framebuffer rendering, tty keyboard input, no SDL — the only Doom that
+works on this fbcon-only NOMMU system (chocolate-doom is BR2_USE_MMU-
+blocked, prboom drags the SDL stack). The original package/fbdoom was a
+local addition to the reference build tree that was never vendored and
+got lost in a tree rebuild — images built from a fresh clone silently
+shipped without Doom despite the defconfig's BR2_PACKAGE_FBDOOM=y.
+This recreates it: pinned upstream master commit, sha256-hashed, CC
+override injecting Buildroot's FLAT target flags (the fbdoom Makefile
+assigns CC with '=', and its internal CFLAGS must survive, so CFLAGS
+itself is untouched), NOSDL=1, and a 64 KB FLAT stack set via flthdr
+at install (Doom recurses; the elf2flt 4 KB default is not survivable,
+and FBDOOM_FLAT_STACKSIZE's nested quoting can't pass through the CC
+override). Also widens doom-wad's Config.in gate so the shareware WAD
+installs alongside (it is upstream, but only selectable with
+chocolate-doom/prboom otherwise).
+
+Run: fbdoom -iwad /usr/share/games/doom/doom1.wad -mb 6
+(6 MB Z-zone from the patch-0010 NOMMU pool; Backspace exits.)
+
+diff --git a/package/Config.in b/package/Config.in
+index 64225c03c8..2a233aafba 100644
+--- a/package/Config.in
++++ b/package/Config.in
+@@ -283,6 +283,7 @@ endmenu
+ menu "Games"
+ 	source "package/ascii-invaders/Config.in"
+ 	source "package/chocolate-doom/Config.in"
++	source "package/fbdoom/Config.in"
+ 	source "package/doom-wad/Config.in"
+ 	source "package/flare-engine/Config.in"
+ 	source "package/flare-game/Config.in"
+diff --git a/package/doom-wad/Config.in b/package/doom-wad/Config.in
+index 9ef4e3e5a2..8e816ddea2 100644
+--- a/package/doom-wad/Config.in
++++ b/package/doom-wad/Config.in
+@@ -1,6 +1,6 @@
+ config BR2_PACKAGE_DOOM_WAD
+ 	bool "shareware Doom WAD file"
+-	depends on BR2_PACKAGE_CHOCOLATE_DOOM || BR2_PACKAGE_PRBOOM
++	depends on BR2_PACKAGE_CHOCOLATE_DOOM || BR2_PACKAGE_PRBOOM || BR2_PACKAGE_FBDOOM
+ 	help
+ 	  This will install the shareware wad data file for the doom
+ 	  game.
+diff --git a/package/fbdoom/Config.in b/package/fbdoom/Config.in
+new file mode 100644
+index 0000000000..31eea95c08
+--- /dev/null
++++ b/package/fbdoom/Config.in
+@@ -0,0 +1,12 @@
++config BR2_PACKAGE_FBDOOM
++	bool "fbdoom"
++	help
++	  Doom port for the Linux framebuffer console, with the SDL
++	  dependency stripped (NOSDL build). Renders straight to
++	  /dev/fb0 and reads the keyboard from the controlling tty, so
++	  it runs on fbcon-only NOMMU systems.
++
++	  Select BR2_PACKAGE_DOOM_WAD to install the shareware
++	  doom1.wad.
++
++	  https://github.com/maximevince/fbDOOM
+diff --git a/package/fbdoom/fbdoom.hash b/package/fbdoom/fbdoom.hash
+new file mode 100644
+index 0000000000..b622c7fb39
+--- /dev/null
++++ b/package/fbdoom/fbdoom.hash
+@@ -0,0 +1,2 @@
++# Locally computed
++sha256  77f57cee68fed438dffdba96f6070b8975c16652a63ddf4fb967994e5585a38a  fbdoom-17280163bc95e5d954d2efaa0633489b763b4cd1.tar.gz
+diff --git a/package/fbdoom/fbdoom.mk b/package/fbdoom/fbdoom.mk
+new file mode 100644
+index 0000000000..d9e79ad38f
+--- /dev/null
++++ b/package/fbdoom/fbdoom.mk
+@@ -0,0 +1,36 @@
++################################################################################
++#
++# fbdoom
++#
++################################################################################
++
++FBDOOM_VERSION = 17280163bc95e5d954d2efaa0633489b763b4cd1
++FBDOOM_SITE = $(call github,maximevince,fbDOOM,$(FBDOOM_VERSION))
++FBDOOM_LICENSE = GPL-2.0
++FBDOOM_LICENSE_FILES = README.TXT
++
++# The Makefile assigns CC with '=', so a command-line CC override is the
++# supported hook: inject Buildroot's target flags there (TARGET_LDFLAGS
++# carries the elf2flt/FLAT link flags on this platform; linker options
++# are inert during the -c compiles). Its internal CFLAGS
++# (-Os -DNORMALUNIX -DLINUX ...) must survive, so CFLAGS itself is not
++# overridden. NOSDL=1 drops the -lSDL default.
++define FBDOOM_BUILD_CMDS
++	$(TARGET_MAKE_ENV) $(MAKE) -C $(@D)/fbdoom \
++		CC="$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS)" \
++		CROSS_COMPILE="$(TARGET_CROSS)" \
++		NOSDL=1 fbdoom
++endef
++
++# Doom recurses (R_RenderBSPNode et al.) — the 4 KB elf2flt default is
++# not survivable; 64 KB is the customary uclinux value (+60 KB resident
++# against the ~6 MB Z-zone it mmaps anyway). Set via flthdr rather than
++# FBDOOM_FLAT_STACKSIZE: that variable's -Wl,-elf2flt="-r -s..." value
++# can't survive the nested quoting of the CC override above.
++define FBDOOM_INSTALL_TARGET_CMDS
++	$(INSTALL) -m 0755 -D $(@D)/fbdoom/fbdoom \
++		$(TARGET_DIR)/usr/bin/fbdoom
++	$(TARGET_CROSS)flthdr -s 65536 $(TARGET_DIR)/usr/bin/fbdoom
++endef
++
++$(eval $(generic-package))
