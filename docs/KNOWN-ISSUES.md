@@ -488,6 +488,47 @@ mode is silent (boot completes, panel stays on the logo/blank, only
 serial works). Also spot-check Fn+Esc sleep/wake: wake latency drops
 3 s → ~0 with the commit-tail hook.
 
+## Cold boots are far less reliable than warm resets
+
+**Status: OPEN — two mitigations shipped 2026-07-05 (patches 0034, 0035),
+pending a cold-boot campaign.**
+
+The headline ~97 % first-try boot figure was measured with
+`tools/freezetest.py` RTS resets, which reset **only the P4** — the C6
+keeps running. A cable plug-in is a dual-chip cold boot, and that path
+was never campaigned post-0031. A live-captured session (2026-07-05,
+serial logger attached across repeated cable plugs, old 0001–0032
+firmware) saw ~5 of 6 cold boots die, in three distinct classes:
+
+1. **~21 s, last line `esp32_spi: esp_bt_init_work: ESP Bluetooth
+   init` (×2).** The badge looks fully booted (login prompt on the
+   panel from ~7 s), then wedges into the MWDT just as the deferred BT
+   registration burst (patch 0030) hits the freshly cold-booted C6.
+   ROM banner `rst:0x7 (HP_SYS_HP_WDT_RESET)`, `Core0 Saved PC
+   0x4807cce4` both times. This is the "it hangs before I can even
+   type" experience. *Mitigation shipped: patch 0035 makes HCI
+   registration opt-in at runtime (`bt_enable` knob, written by the
+   HCI tools) — no BT traffic at boot at all.*
+2. **~1.4 s, inside the esp32-c6-kick probe window (×1).** Froze
+   between c6-kick's IO_MUX line and its "C6 released" line — and sat
+   there **hard-dead with no watchdog reset**, because esp32p4_wdt
+   probed at device_initcall *after* drivers/misc in link order.
+   *Mitigation shipped: patch 0034 arms the MWDT at subsys_initcall,
+   before any device_initcall probe can hang; freezes before ~0.3 s
+   remain uncovered (arming in the boot shim is the eventual fix).*
+3. **~3.7 s, right after `mmcblk0: p1` (×1).** The already-documented
+   residual class from the 0031 campaign (1/30 warm) — apparently more
+   frequent cold. SD card (SPCC 29 GiB) was inserted throughout;
+   whether card presence modulates this class is still open.
+
+Plus one boot that hit `Panic handler entered multiple times. Abort
+panic handling. Rebooting ...` (an ESP-IDF panic-handler string) right
+after the 0.024 s console switch — unexplained, one occurrence.
+
+Verification needs *physical* power cycles (RTS cannot produce them):
+either a hand campaign or a smart-plug harness. Until then treat the
+97 % figure as warm-reset-only, and 0034/0035 as unverified.
+
 ## BMI270 internal status check sometimes fails
 
 After firmware upload, the chip's `INTERNAL_STATUS` register sometimes

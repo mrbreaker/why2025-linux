@@ -68,11 +68,17 @@ Boot to BusyBox login takes about 7 seconds. From there:
   vendored into this repo; images built from a fresh clone currently
   omit it (the defconfig's `BR2_PACKAGE_FBDOOM=y` is dropped silently).
   See the warning in `BUILDING.md`; vendoring it back is a known TODO.
-- Cold-boot reliability: **~97% first-try boot success** (29/30,
-  2026-07-05, after patch 0031 — see next bullet; stepping stones were
-  ~60% baseline and ~73% with patch 0030's Bluetooth-init deferral).
-  The watchdog auto-resets the rare residual freeze, so the badge
-  reaches login after at most one retry.
+- Boot reliability: **~97% first-try success on warm resets** (29/30,
+  2026-07-05, after patch 0031; stepping stones were ~60% baseline and
+  ~73% with patch 0030's Bluetooth-init deferral). **True cold boots
+  (cable plug-in — both chips freshly powered) are markedly worse**:
+  a live-captured 2026-07-05 session saw most cold boots freeze, the
+  biggest killer being the deferred BT-init burst at ~21 s against a
+  cold C6. Two mitigations shipped (patch 0034 arms the watchdog
+  before any fragile probe runs, so no freeze is ever hard-dead;
+  patch 0035 makes Bluetooth HCI registration opt-in at runtime,
+  removing BT from boot entirely) — pending a physical power-cycle
+  campaign. See `docs/KNOWN-ISSUES.md` "Cold boots".
 - The CLIC interrupt-delivery latch that used to wedge the kernel
   under multi-process churn (a silicon-level erratum, root-caused at
   the register level) is **avoided as of patch 0031**: userspace runs
