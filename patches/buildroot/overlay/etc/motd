@@ -6,5 +6,6 @@ Quick start:
                                    badge/ssh/authorized_keys
   echo 150 > /sys/class/backlight/backlight/brightness    0..255 (boot: 76)
   echo heartbeat > /sys/class/leds/rgb:indicator-0/trigger frontpanel LEDs
+  launcher                         panel menu (arrows + enter, esc quits)
   sensorpanel | ble_scan | ble_adv&  demos; Fn+Esc = display sleep
 Rootfs is read-only squashfs: write under /tmp (RAM) or /mnt/sd.
