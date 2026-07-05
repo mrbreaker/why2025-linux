@@ -31,12 +31,20 @@ null::sysinit:/bin/ln -sf /proc/self/fd/2 /dev/stderr
 ::sysinit:/etc/init.d/rcS
 
 # Put a getty on the serial port
-# FB-console getty: kept enabled now that busybox is under 512 KB and
-# wpa_supplicant under 1 MB. Each resident busybox-FLAT process pins
-# ~512 KB of contiguous PSRAM, and the buddy heap has 7-8×512kB blocks
-# free at boot — plenty of headroom for both this getty + the UART
-# getty + the wifi-connect chain.
-console::respawn:/sbin/getty -L  console 0 vt100 # GENERIC_SERIAL
+# FB-console getty. Each resident busybox-FLAT process pins ~600 KB
+# (measured flthdr footprint 2026-07-05: text+data+bss+16000 stack =
+# 613,216 B with vi/inetd/ntpd — the old "under 512 KB" claim went
+# stale). The
+# patch-0010 pool hands out byte-precise pages, so the ~10 MB pool
+# comfortably holds this getty + the UART getty + the wifi-connect
+# chain; only the buddy-fallback path transiently needs an order-8
+# (1 MB) contiguous block per exec.
+#
+# TERM=linux, not vt100: /dev/console is tty1 (last console= in
+# CONFIG_CMDLINE wins) = fbcon, which implements the "linux" terminal
+# type; vt100 terminfo (no colour, wrong function keys) breaks
+# terminfo-aware programs like vi on the panel.
+console::respawn:/sbin/getty -L console 0 linux # fbcon on tty1
 
 # Stuff to do for the 3-finger salute
 #::ctrlaltdel:/sbin/reboot

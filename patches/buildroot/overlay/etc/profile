@@ -1,19 +1,26 @@
 export PATH="/bin:/sbin:/usr/bin:/usr/sbin"
 
-# WHY2025 NOMMU: avoid the `id -u` backtick the default Buildroot profile
-# uses. Under memory pressure that fork+exec can fail; the empty
-# substitution then turns `[ "" -eq 0 ]` into a parser error and the
-# login shell exits with "syntax error: unexpected E", looping getty.
-# Use $USER (set by login) or $LOGNAME instead — no fork needed.
+# WHY2025 NOMMU: everything in the login path must be fork-free. Under
+# memory pressure a fork+exec can fail; an empty command substitution
+# then feeds the parser garbage, the login shell exits with a syntax
+# error, and getty respawn-loops (each respawn is another FLAT exec).
+# Only hush builtins and parameter expansion below — no backticks, no
+# $(...), no external commands.
+
+# PS1: \u \h \w \$ are expanded in-process by busybox line editing
+# (FEATURE_EDITING_FANCY_PROMPT — no fork); \$ prints # for uid 0.
+# \[ \] bracket the colour escapes so line editing keeps its width math.
 if [ "$PS1" ]; then
-    if [ "$USER" = "root" ] || [ "$LOGNAME" = "root" ]; then
-        export PS1='# '
-    else
-        export PS1='$ '
-    fi
+    export PS1='\[\033[1;32m\]\u@\h\[\033[0m\]:\[\033[1;34m\]\w\[\033[0m\]\$ '
 fi
 
-export EDITOR='/bin/vi'
+# Shell history: RAM-backed (rootfs is a read-only squashfs, /tmp is
+# tmpfs), lost on power-off; busybox self-trims the file at ~4x999
+# lines. Persist it yourself from /mnt/sd/badge/profile.sh if wanted.
+export HISTFILE=/tmp/.hush_history
+
+export EDITOR=vi
+export PAGER=more
 
 for i in /etc/profile.d/*.sh ; do
     if [ -r "$i" ]; then
