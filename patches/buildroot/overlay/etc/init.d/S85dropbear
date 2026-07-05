@@ -1,0 +1,39 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# S85dropbear — start inetd for SSH. The NOMMU dropbear build is
+# inetd-mode only (its standalone accept loop needs fork(), which this
+# uclibc doesn't even provide), so one long-lived busybox inetd listens
+# on :22 and vfork+execs dropbear per connection — nothing SSH-related
+# runs until someone actually connects.
+#
+# Late start (after S40network, before S98sensorpanel): a single
+# fork+exec well past the early-boot window (docs/KNOWN-ISSUES.md).
+#
+# Host keys: /etc/dropbear is a symlink to /var/run/dropbear (tmpfs).
+# `dropbear -R` generates an ed25519 key on the first connection, which
+# changes every boot (known_hosts warning) unless S15sdcard copied a
+# persistent one from /mnt/sd/badge/dropbear/ first. Create one with:
+#   mkdir -p /mnt/sd/badge/dropbear
+#   dropbearkey -t ed25519 -f /mnt/sd/badge/dropbear/dropbear_ed25519_host_key
+#
+# Auth: root's password is blank, and dropbear rejects blank-password
+# logins unless started with -B — deliberately NOT passed here, so SSH
+# is key-only: put an ssh-ed25519 public key in badge/ssh/authorized_keys
+# on the card (/root/.ssh symlinks there; RSA/ECDSA are compiled out).
+
+case "$1" in
+    start|"")
+        umask 077
+        mkdir -p /var/run/dropbear
+        [ -x /usr/sbin/dropbear ] && inetd /etc/inetd.conf
+        ;;
+    stop)
+        killall inetd 2>/dev/null
+        ;;
+    restart|reload)
+        "$0" stop
+        "$0" start
+        ;;
+esac
+
+exit 0

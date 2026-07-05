@@ -1,0 +1,54 @@
+# WHY2025 busybox additions merged on top of the stock
+# package/busybox/busybox-minimal.config via
+# BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES.
+#
+# NOMMU size ledger (busybox 1.37.0, riscv32-uclibc FLAT, 2026-07-05):
+# baseline footprint (text+data+bss+16000 stack per flthdr) 579,104 B —
+# note this is already over the old 512 KB order-7 budget; the patch-0010
+# userspace pool hands out byte-precise pages, and the buddy fallback
+# transiently grabs order-8 (1 MB) then trims. With this whole fragment
+# (vi + inetd + ntpd) the measured footprint is 613,216 B — same order-8
+# transient class, 435 KB below the 1 MB ceiling. Re-check with flthdr
+# after any change, and never let it cross 1 MB (wpa_supplicant's
+# bucket: no order-9 block ever exists at boot).
+
+# vi — measured feature set (REGEX_SEARCH deliberately off: pulls uClibc
+# regex through elf2flt, unmeasured; ALLOW_EXEC off as in minimal, so
+# ':!cmd' is compiled out — appropriate on NOMMU).
+CONFIG_VI=y
+CONFIG_FEATURE_VI_MAX_LEN=4096
+# CONFIG_FEATURE_VI_8BIT is not set
+CONFIG_FEATURE_VI_COLON=y
+CONFIG_FEATURE_VI_COLON_EXPAND=y
+CONFIG_FEATURE_VI_YANKMARK=y
+CONFIG_FEATURE_VI_SEARCH=y
+# CONFIG_FEATURE_VI_REGEX_SEARCH is not set
+CONFIG_FEATURE_VI_USE_SIGNALS=y
+CONFIG_FEATURE_VI_DOT_CMD=y
+CONFIG_FEATURE_VI_READONLY=y
+CONFIG_FEATURE_VI_SETOPTS=y
+CONFIG_FEATURE_VI_SET=y
+CONFIG_FEATURE_VI_WIN_RESIZE=y
+CONFIG_FEATURE_VI_ASK_TERMINAL=y
+CONFIG_FEATURE_VI_UNDO=y
+CONFIG_FEATURE_VI_UNDO_QUEUE=y
+CONFIG_FEATURE_VI_UNDO_QUEUE_MAX=256
+# CONFIG_FEATURE_VI_VERBOSE_STATUS is not set
+
+# inetd — SSH front-end: one resident process, vfork+execs dropbear per
+# connection (the NOMMU dropbear is inetd-mode only). Builtin toy
+# services stay off.
+CONFIG_INETD=y
+# CONFIG_FEATURE_INETD_SUPPORT_BUILTIN_ECHO is not set
+# CONFIG_FEATURE_INETD_SUPPORT_BUILTIN_DISCARD is not set
+# CONFIG_FEATURE_INETD_SUPPORT_BUILTIN_TIME is not set
+# CONFIG_FEATURE_INETD_SUPPORT_BUILTIN_DAYTIME is not set
+# CONFIG_FEATURE_INETD_SUPPORT_BUILTIN_CHARGEN is not set
+# CONFIG_FEATURE_INETD_RPC is not set
+
+# ntpd — one-shot client only (-n -q from S15sdcard after Wi-Fi comes
+# up). The badge has no RTC: every boot starts at the 1970 epoch.
+CONFIG_NTPD=y
+# CONFIG_FEATURE_NTPD_SERVER is not set
+# CONFIG_FEATURE_NTPD_CONF is not set
+# CONFIG_FEATURE_NTP_AUTH is not set

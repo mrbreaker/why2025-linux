@@ -36,3 +36,13 @@ if ! grep -qF "${LINE}" "${INITTAB}"; then
     printf '\n# WHY2025: serial getty on ttyS0 (in addition to /dev/console = tty1)\n%s\n' \
         "${LINE}" >> "${INITTAB}"
 fi
+
+# WHY2025: raise dropbear's FLAT stack 4 KB -> 16 KB (kex/crypt stack
+# headroom; the elf2flt default is 4 KB). In-memory image becomes
+# 491,744 B — still inside the 512 KB order-7 bucket, see
+# patches/buildroot/dropbear-localoptions.h. flthdr comes from
+# HOST_DIR/bin, which Buildroot puts first on PATH for this script.
+# Idempotent: -s sets an absolute value.
+if [ -f "${TARGET_DIR}/usr/sbin/dropbear" ]; then
+    riscv32-buildroot-linux-uclibc-flthdr -s 16384 "${TARGET_DIR}/usr/sbin/dropbear"
+fi
