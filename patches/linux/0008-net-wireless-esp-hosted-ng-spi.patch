@@ -9013,7 +9013,7 @@
 +	wait_ret = wait_for_completion_timeout(&esp_spi_probe_done,
 +					       msecs_to_jiffies(5000));
 +	if (!wait_ret) {
-+		esp_err("Timed out waiting for esp_spi probe — DT child missing or controller absent\n");
++		esp_err("Timed out waiting for esp_spi probe: DT child missing or controller absent\n");
 +		spi_unregister_driver(&esp_spi_driver);
 +		spi_exit();
 +		return -ENODEV;

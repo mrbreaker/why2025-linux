@@ -823,7 +823,7 @@
 +			 status);
 +	else
 +		dev_dbg(dsi->dev,
-+			"phy_power_on: PHY_STATUS=%#x lock=1 stop_clk=%d after %d×10us\n",
++			"phy_power_on: PHY_STATUS=%#x lock=1 stop_clk=%d after %dx10us\n",
 +			status,
 +			!!(status & PHY_STATUS_STOP_STATE_CLK_LANE),
 +			i);
@@ -1196,7 +1196,7 @@
 +	writel(GDMA_CHEN_ENABLE(chan), g + GDMA_CHEN0);
 +
 +	dev_info(dev,
-+		 "GDMA armed: fb @%pad (%zu B) → %#x via LLI @%pad chan=%u; "
++		 "GDMA armed: fb @%pad (%zu B) -> %#x via LLI @%pad chan=%u; "
 +		 "block_ts=%u (64b words)\n",
 +		 &dsi->fb_dma, fb_size, ESP32P4_DSI_BRG_MEM_BASE,
 +		 &dsi->lli_dma, chan, lli->block_ts0 + 1);
@@ -1508,7 +1508,7 @@
 +	 */
 +#define ESP32P4_PANEL_VSHIFT 16
 +	dev_info_once(dsi->dev,
-+		      "blit: 90° CCW rotation + %d-px panel vshift workaround active "
++		      "blit: 90-degree CCW rotation + %d-px panel vshift workaround active "
 +		      "(panel_y = (dst_col + %d) mod H); see comment above ESP32P4_PANEL_VSHIFT\n",
 +		      ESP32P4_PANEL_VSHIFT, ESP32P4_PANEL_VSHIFT);
 +
