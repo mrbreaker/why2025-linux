@@ -47,3 +47,8 @@ fi
 if [ -f "${TARGET_DIR}/usr/sbin/dropbear" ]; then
     riscv32-buildroot-linux-uclibc-flthdr -s 16384 "${TARGET_DIR}/usr/sbin/dropbear"
 fi
+
+# WHY2025: locally-built FLAT tools leave elf2flt debug sidecars (*.gdb,
+# ~200 KB host-side ELFs each) next to the binaries in the overlay; the
+# overlay rsync copies them into the target. Strip them from the image.
+rm -f "${TARGET_DIR}"/usr/bin/*.gdb
