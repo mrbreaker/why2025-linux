@@ -242,6 +242,23 @@ esptool --chip esp32p4 -p /dev/cu.wchusbserial<your-p4-port> -b 460800 \
 Kernel-only change: drop the rootfs/dtb lines. Userspace-only change:
 flash rootfs alone (offset 0x710000).
 
+## Release images
+
+`tools/mkrelease.sh` merges each chip's artifacts into a single
+0x0-based image, so a release user runs one `write-flash` per chip:
+
+```bash
+tools/mkrelease.sh buildroot/output/images linux-native/build \
+    /path/to/esp-hosted/.../network_adapter/build out/
+
+esptool --chip esp32p4 -p /dev/cu.<p4-port> -b 460800 write-flash 0x0 out/esp32p4.bin
+esptool --chip esp32c6 -p /dev/cu.<c6-port> -b 460800 write-flash 0x0 out/esp32c6.bin
+```
+
+Two ports, not one: the side USB-C is the P4 (CH340), the bottom USB-C
+is the C6's native USB. Pass `-` as the third argument to skip the C6
+image.
+
 ## Running sensorpanel
 
 `sensorpanel` renders live BME680 + BMI270 readings to the DSI panel.
