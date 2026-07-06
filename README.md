@@ -59,6 +59,24 @@ there:
   M-mode; [`docs/RUNTIME-WEDGE.md`](docs/RUNTIME-WEDGE.md) has the
   investigation).
 
+## Installing
+
+Grab `esp32p4.bin` and `esp32c6.bin` from
+[Releases](https://github.com/mrbreaker/why2025-linux/releases) and
+flash each chip on its own USB-C port (`pip install esptool`):
+
+```sh
+# side USB-C port (P4 — Linux)
+esptool --chip esp32p4 -p /dev/<p4-port> -b 460800 write-flash 0x0 esp32p4.bin
+
+# bottom USB-C port (C6 — Wi-Fi/BT coprocessor; only needed once)
+esptool --chip esp32c6 -p /dev/<c6-port> -b 460800 write-flash 0x0 esp32c6.bin
+```
+
+Find the ports with `ls /dev/cu.*` (macOS) or `ls /dev/ttyUSB*
+/dev/ttyACM*` (Linux); the P4 enumerates as a CH340. To build from
+source instead: [`BUILDING.md`](BUILDING.md).
+
 ## Screenshots
 
 ![Boot console on the panel](screenshots/boot.jpg)
