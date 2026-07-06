@@ -120,8 +120,8 @@ make BR2_LINUX_KERNEL_PATCH=/path/to/why2025-linux/patches/linux \
 `buildroot/output/images/` after every build, in-tree or via the
 `O=<dir>` layout in [Troubleshooting](#too-many-open-files-building-on-a-mac-shared-vm-mount):
 
-  - `Image` — flat kernel image (~6.5 MB)
-  - `rootfs.squashfs` — read-only root (~5 MB)
+  - `Image` — flat kernel image (~6 MB)
+  - `rootfs.squashfs` — read-only root (~4.5 MB)
   - `esp32p4-why2025.dtb` — pulled out of the kernel build tree, since
     the kernel packaging here doesn't install DTBs into `output/images/`
 
@@ -277,21 +277,14 @@ After login:
 fbdoom -iwad /usr/share/games/doom/doom1.wad -mb 4
 ```
 
-(or pick DOOM from the `launcher` menu, which also passes `-mb 4` and
-hands its own 1 MB shadow buffer back to the pool for the duration.)
+(or pick DOOM from the `launcher` menu.)
 
 Takes over `/dev/fb0` — fbcon stops drawing until it exits. Keypad:
 F1..F6 + arrows (see the DTS keymap for the full set), Backspace exits.
 
-Z-zone sizing: **an explicit `-mb N` is single-shot** — fbdoom sets
-`min_ram = default_ram`, so one failed allocation prints
-`Unable to allocate N-1 MiB of RAM for zone` and exits; there is no
-auto-shrink (and the no-flag defaults are compiled in as 6/6, so plain
-`fbdoom` behaves the same). With the 2026-07-05 userspace (two ~600 KB
-busybox gettys + inetd resident, pool fragmentation) a contiguous 6 MB
-hole no longer exists; `-mb 4` is the verified working size (hardware,
-2026-07-05: 4 MB zone allocates, Doom runs). If even `-mb 4` fails,
-check what else is resident in the 10 MB pool.
+Use `-mb 4`: fbdoom's zone allocation is single-shot (no auto-shrink;
+`Unable to allocate N MiB` means it exited), and with the resident
+userspace the NOMMU pool no longer has a contiguous 6 MB hole.
 
 ## Monitoring
 

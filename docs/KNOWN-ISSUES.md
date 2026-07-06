@@ -1,587 +1,111 @@
 # Known issues
 
-## Silent kernel wedge under sustained fork+exec churn
+Open issues only. Resolved ones are archived in one line each at the
+bottom; the full investigation history lives in
+[`RUNTIME-WEDGE.md`](RUNTIME-WEDGE.md) and the git log.
 
-Reproducer (after login, badge boots cleanly):
+## Residual boot freeze at `mmcblk0: p1` (~3.7 s)
 
-```sh
-(while :; do /bin/true; done) &
-```
+The one remaining boot-freeze class: console output stops right after
+the SD partition-scan line; the MWDT resets the badge ≤30 s later, so
+it costs one automatic retry, never a brick. Measured first-try rates:
+29/30 (2026-07-05 warm campaign, card state unrecorded) vs 23/30 (same
+day, SD card confirmed inserted, all 7 failures in or near this class)
+— card presence is the leading hypothesis; a card-out 30-cycle
+`tools/freezetest.py` campaign would settle it. Mechanism unknown.
 
-Kernel goes silent within seconds — no Oops, no `DETECT_HUNG_TASK`
-output, no panic. UART input is also dead, so `tools/loadtest.py`'s
-post-wedge state-capture commands return nothing. Recovery is automatic:
-the patch 0019 MWDT (hardware-confirmed) hard-resets the badge ≤30 s
-after the feed stops. (A ramoops log across that reset was attempted
-but pstore isn't NOMMU-safe — see patch 0020.)
+Related gap: the watchdog arms at `subsys_initcall` (~0.3 s, patch
+0034). A freeze before that is still unrecoverable without a power
+cycle; arming the MWDT in the boot shim would close it.
 
-**Status (2026-07-05): AVOIDED by patch 0031 — userspace now runs at
-physical M-mode, so the privilege-dropping mrets the latch needs never
-happen. Both churn reproducers run clean (15/12 min vs 25–90 s
-baseline).** The 2026-07-04 root-cause finding stands (register-level
-latch, every software recovery failed); the MWDT stage-0 reset (patch
-0019) remains armed as the backstop. The full forensic trail is in
-`docs/RUNTIME-WEDGE.md`; summary below. (The diagnostic tracer /
-level-7 experiments that established this, formerly patches 0025–0028,
-are concluded and now live in `patches/linux-diagnostics/`, out of the
-shipping series.)
+## Cold boots are less reliable than warm resets
 
-### Root cause (reframed 2026-07-04 by direct hardware experiment)
+`freezetest.py` RTS-resets only the P4; a cable plug-in cold-boots both
+chips, and that path measures worse (post-0034/0035 hand campaign:
+~7/9 first-try, every failure watchdog-recovered). A proper cold-boot
+campaign needs physical power cycles — a hand campaign or a smart-plug
+harness; RTS cannot produce them.
 
-**The old "NOMMU FLAT exec alloc/free" hypothesis below is FALSIFIED.**
-A controlled experiment on hardware (see the discriminator campaign in
-`docs/RUNTIME-WEDGE.md`) established:
+## esp-hosted command channel can starve a queued command
 
-- A **pure shell-builtin busy loop** — `(while :; do :; done) &`, zero
-  fork, zero exec, zero mmap, zero signals — **wedges the kernel** the
-  same way `/bin/true` does. So the trigger is not exec, not the FLAT
-  loader, not the NOMMU contiguous-block allocator, not the app_pool.
-- But that same busy loop **run in isolation** (nothing else runnable)
-  **never wedges**, even after minutes. The wedge only appears when a
-  **second runnable task** exists (a heartbeat that `echo`/`sleep`s, or
-  the fork/exec/exit churn of `/bin/true`) — i.e. when the workload
-  causes **context switches** interleaved with the periodic tick.
-- At the wedge, the ESP32-P4 ROM's watchdog-reset banner reports
-  `Core0 Saved PC` in the **userspace** address range (>25 MB above the
-  0x48000000 kernel base, well past `_end`). So the CPU is spinning in a
-  userspace loop, **never being preempted** — the SYSTIMER interrupt has
-  **stopped being delivered to the core**. The scheduler never runs, the
-  kernel-fed MWDT (patch 0019) stops being fed, and the chip resets
-  ~seconds later. That reset banner is the ground-truth wedge signal
-  (host-sleep-immune — only a real kernel wedge stops the watchdog feed).
-- Probing the console during the wedge window gets **no response on any
-  input** (UART RX is a different, level-triggered CLIC slot), so it is
-  not the timer slot alone that dies — **all** interrupt delivery stops.
+`esp_cmd_work()` (patch 0008) bails with "Busy in another cmd
+execution" without rescheduling itself (the upstream code comments
+admit this). A command queued while another is in flight is only sent
+if an unrelated caller kicks the workqueue before its timeout (500 ms
+for the WHY2025-added commands, 5 s for cfg80211) — otherwise it
+silently times out unsent. Likely why the WHY2025-added commands'
+timeouts fire "often". A proper fix (rescheduling from
+`process_cmd_resp()` and the timeout paths) changes the command
+channel's locking and needs a boot-cycle load test — deferred.
 
-So the wedge is a **CLIC-level interrupt-delivery failure under
-concurrency**: after some interleaving of the timer interrupt with
-context switches / other interrupts, the core stops taking *any*
-interrupt while running userspace.
+## Confirmed-latent esp-hosted lifecycle bugs (hardening TODO)
 
-### Root cause, register-level (2026-07-04, patches 0025–0027)
+A 2026-07-05 audit of patch 0008 confirmed real bugs that are all gated
+on conditions absent in normal operation (teardown, a second slave
+bootup, GFP_ATOMIC alloc failure, `write_packet` failure with the
+datapath closed). Documented rather than shipped because they can't be
+exercised without fault injection and the command path is
+boot-race-sensitive:
 
-The PSRAM-persistent wedge tracer (patch 0025) captured the fatal
-moment: the last interrupt ever delivered is a timer tick taken with
-**raw `mcause.mpil = 0xFF` and a userspace EPC** — the hardware claims
-the core was running userspace at interrupt level 255, a state the
-exit shim makes impossible (it writes `mpil = 0` before every `mret`).
-After that handler's `mret`, no interrupt is ever accepted again. The
-per-tick CLIC/SYSTIMER snapshots stay pristine to the end: threshold,
-slot enables/levels, and the alarm are all intact — the blockage is
-*inside the core*, not in any memory-mapped CLIC state.
-
-The model: an interrupt racing the preceding `mret` (back-to-back
-pending — which is why a second runnable task is required) is accepted
-with a mixed context save — post-`mret` privilege/EPC (user) but
-pre-`mret` interrupt level — and the core's internal running-level
-tracking never pops. Patch 0027's level-partition experiment nailed
-this: with normal slots moved to level 3 (INTCTL `0x7F`), the fatal
-record's `mpil` became `0x7F` — it tracks the raced handler's level
-exactly.
-
-The same experiment ruled out software recovery: a level-7 MWDT
-stage-0 diagnostic interrupt — proven live by a positive control on a
-healthy system — does **not** deliver into the wedged state, so the
-block is **level-independent**, and patch 0026's in-dispatch repair
-ladder (threshold pulse, per-slot INTIE toggle) doesn't unstick it
-either. This is silicon-erratum behaviour in the ESP32-P4's CLIC
-v0.9 implementation, not a kernel bug: `arch/riscv/kernel/entry.S`
-restores `mpil = 0` correctly, and ESP-IDF's exit path has identical
-semantics with no visible workaround.
-
-**Mitigation shipped (patch 0019):** MWDT stage 0 = system reset, so a
-wedge self-recovers in ≤30 s. The exit-shim pendency drain (former
-patch 0029) was tried and falsified on hardware — the trigger is an
-interrupt arriving cycle-coincident with the mret, not pre-existing
-pendency (see RUNTIME-WEDGE.md). Software recovery *and* avoidance are
-now both exhausted; the auto-reset is the accepted end-state. (If this
-ever needs to go further: the trace captures would support an
-Espressif erratum filing, or a bare-metal/ESP-IDF reproducer could
-confirm it outside Linux — neither is planned.)
-
-### What's been ruled out (all hardware-tested)
-- **Memory exhaustion / the NOMMU allocator / FLAT loader / app_pool.**
-  A no-alloc, no-exec busy loop wedges just as hard (above).
-- **`idle=poll` / WFI.** A 100%-CPU busy loop never enters the idle
-  loop, yet wedges — the idle path is not involved.
-- **Signal delivery (SIGCHLD), exec-time cache flushes, timer re-arm
-  `-ETIME`.** Patches 0014/0015/0016 shipped and hardware-tested
-  2026-07-04: none fixed it (see below).
-- **The SYSTIMER being edge- vs level-triggered.** Patch 0022 switched
-  it to level; still wedges (below).
-- **A task resuming in userspace with interrupts masked (MIE=0).** Patch
-  0023 forces `MPIE=1` on every return to userspace; still wedges, and
-  all interrupts (not just the timer) stay dead — so the failure is at
-  the CLIC delivery level, above per-task MIE.
-- **Sensorpanel / file-content / UART-volume specific.** Long since
-  ruled out: grep loops, `/bin/true`, and the pure builtin loop all
-  wedge; single-shot commands survive.
-- **Recoverable CLIC state.** Patch 0026's dispatch-time repair ladder
-  (threshold pulse, INTIE toggle on slots 16–23, run inside the last
-  delivered interrupt) does not prevent the death that follows; patch
-  0027's level-7 diagnostic interrupt (positive-control-verified) does
-  not deliver into the wedge. The latch is core-internal and
-  level-independent.
-- **"Interrupt pending at the mret" as the trigger.** A drain in the
-  exit shim (patch 0029, since reverted) guaranteed no interrupt was
-  pending at the final mret-to-user; the wedge rate didn't change, and
-  instrumentation showed pendency at that point is ~once-per-minutes
-  rare anyway (0 hits in 4048 returns). The trigger is an interrupt
-  *arriving* cycle-coincident with the mret — not gateable by
-  software. See RUNTIME-WEDGE.md.
-
-**Boot-window frequency note (2026-07-04, transcript-audited):** across
-~20 boots in one session, **3 verified in-stream MWDT resets** hit
-~20–30 s after boot with only login-level activity (single open serial
-session: login, one `ps` command echoed, then the ROM's
-`HP_SYS_HP_WDT_RESET` banner arrived on the same port — the reset
-reason is printed by mask ROM and cannot be faked host-side; an
-RTS/port-open reset reads `rst:0x1 (POWERON)` instead). One further
-incident was a **console-only freeze** (output stopped at ~3.7 s
-uptime, no WDT reset ≥76 s — kernel alive and feeding, so this is the
-older "boot freeze" class, not the wedge). A 5-boot no-interaction
-loop was clean. So the deferred-probe window (esp-hosted init +
-pwm-backlight probes + rcS) plus a little shell activity is a danger
-zone for the same CLIC-delivery bug, while idle/normal boots look
-stable. Practical consequence: interactive serial work right after
-login is unreliable (do it fast, or idle ~45 s first).
-
-The "boot-time reliability claims need a fresh `freezetest.py`
-campaign" this note used to call for **has now been run** — see "Boot
-freeze in the display + backlight bring-up window" below: ~40% of
-first-try boots froze in that window on the 0001–0024 build, far above
-the old ~1/30 estimate (patch 0030 cut it to ~27% by eliminating one
-of the two freeze classes; patch 0031 then took the window to zero —
-~97% first-try overall).
-
-### What it scales with
-**The presence of concurrent context switches, not fork+exec rate.**
-`/bin/true` (heavy fork/exec) wedges in ~35–90 s; a builtin busy loop
-plus a once-per-5 s heartbeat wedges in ~25 s; the busy loop *alone*
-does not wedge at all. Wall-time and "a second runnable task" matter;
-exec rate does not (a 100×-higher fork rate does not wedge 100× faster).
-
-### Why there's no Oops
-Nothing traps — the CPU just spins in userspace with interrupts
-silently un-delivered, and every configured detector (SOFTLOCKUP,
-HUNG_TASK, WQ_WATCHDOG) is tick-fed, so none can fire. The
-register-state capture this section used to call for has been built
-and run — patches 0025–0027, results under "Root cause,
-register-level" above.
-
-### Candidate fixes tried (2026-07) — did NOT fix the wedge
-
-A code audit found three independent mechanisms that all match the
-wedge's phenomenology (scales with fork+exec rate, silent, timer IRQ
-stops). Each got a hardening patch (0014–0016). **Hardware-tested
-2026-07-04: the wedge still occurs** — `(while :; do /bin/true; done) &`
-wedged the kernel after ~15 s of churn (heartbeat alive to uptime ~31 s,
-then silent), same signature as before. So none of these three is the
-(sole) root cause. The patches are kept as legitimate hardening (each
-fixes a real latent bug) but are no longer wedge candidates. The one
-thing that changed for the better: the patch 0019 MWDT auto-rebooted the
-badge ~30 s after the wedge instead of a dead hang — see below. The
-three mechanisms, for the record:
-
-- **Patch 0014 — signal-path mcause poisoning.** Upstream
-  `arch_do_signal_or_restart()` writes `regs->cause = -1UL` for every
-  pending signal taken during a syscall. Because entry.S substitutes
-  `EXC_SYSCALL` (8) into `PT_CAUSE`, that site is live (only
-  `rt_sigreturn` had been fixed), and `-1UL` survives the exit shim as
-  `mcause = INT=1 + reserved exccode` on `mret` — the same encoding
-  family behind two previous invisible-trap-loop wedges. The
-  default-ignored SIGCHLD queued at every child exit hits this path
-  once per fork+exec iteration, matching the reproducer's rate scaling
-  exactly.
-- **Patch 0015 — exec-time cache-flush hazards.** ROM cache thunks ran
-  with no IRQ exclusion (the ROM sync engine is non-reentrant; a
-  DMA-sync from IRQ context could clobber an in-flight op), and every
-  exec did a whole-L2 invalidate whose writeback→invalidate window
-  destroyed any concurrently dirtied line — silent kernel-memory
-  corruption proportional to exec rate.
-- **Patch 0016 — one lost oneshot alarm kills the tick forever.**
-  `set_next_event` never checked target-in-past; with HZ_PERIODIC the
-  tick only re-arms from inside the tick ISR, and every configured
-  watchdog (SOFTLOCKUP, HUNG_TASK, WQ_WATCHDOG) is tick-fed — which is
-  precisely why the wedge produces no detector output.
-
-**Watchdog outcome (patch 0019), hardware-confirmed 2026-07-04:** when
-the wedge hit, the kernel-fed MWDT stopped being fed (scheduler dead)
-and reset the badge ~30 s later — a clean auto-reboot instead of the old
-dead hang needing a deep esptool reset. The wedge is still unsolved, but
-it is now *survivable*: soak/repro campaigns no longer need manual
-recovery between hangs.
-
-**Two further fixes tried and hardware-tested 2026-07-04 — also did NOT
-fix the wedge** (kept as defensible hardening, honest about status):
-
-- **Patch 0022 — level-trigger the SYSTIMER CLIC slot.** The SYSTIMER
-  was the *only* edge-triggered CLIC slot (every other peripheral is
-  `IRQ_TYPE_LEVEL_HIGH`); its `target0` output is a latched status bit,
-  so level is the natural, self-healing fit and removes the entire
-  "lost/coalesced edge kills the one-shot tick" failure class. Booted
-  cleanly; the wedge survived slightly longer but still hit. Not the
-  cause.
-- **Patch 0023 — force `MPIE=1` on return to userspace.** Tested the
-  hypothesis that a task resumes in userspace with interrupts masked.
-  Still wedged, with *all* interrupts dead — proving the failure is at
-  the CLIC delivery level, not per-task MIE (see "Root cause" above).
-
-The pure-syscall no-exec discriminator that reframed this whole issue
-*has now been run* (it wedges — exonerating exec/mm/pool), and the
-register-state capture it pointed to found the root cause — see "Root
-cause, register-level" above.
-
-### Workaround for shipping
-
-**Superseded 2026-07-05 by patch 0031 (M-mode userspace): the wedge is
-avoided outright.** The latch only fires on privilege-dropping mrets;
-0031 runs user tasks at physical M-mode so no mret ever drops
-privilege. Both churn reproducers now run clean (15/12 min vs 25–90 s
-baseline wedge times) and the fork+exec restrictions below no longer
-apply. Kept for the record / in case 0031 is ever reverted:
-
-- The MWDT stage-0 reset (patch 0019) turns any wedge into a ≤30 s
-  auto-reboot (still armed as the backstop).
-- Don't run sustained fork+exec loops or leave a second CPU-active task
-  running alongside another. Occasional single shell commands and
-  sensorpanel idle are safe.
-- Demos that need continuous child-process churn should be ported to a
-  single C process (one fork at startup, then long-running).
-
-### Wi-Fi: WORKING as of 2026-07-05 (`ipv6.disable=1`) — the hang was IPv6, not the CLIC wedge
-
-**Wi-Fi is functional.** Hardware-verified on the shipping kernel:
-`wifi-connect "<ssid>" "<psk>"` associates, udhcpc gets a lease, `ping`
-reaches the internet, and a 4-minute ping + fork-churn soak survives
-(associated, ~420 ping iterations, no wedge). The fix is one cmdline
-token: **`ipv6.disable=1`** in `CONFIG_CMDLINE` (`patches/linux/kernel.config`).
-
-**Root cause of the old `wlan0 up` hang — an IPv6 timer, not this
-project's CLIC erratum.** `ip link set wlan0 up` hung the badge within
-~30–50 s on every attempt, *including on the 0031 M-mode kernel that
-survives every CLIC-wedge reproducer*. The discriminators:
-
-- Saved PC is *kernel* text every time (`rb_erase` / `detach_if_pending`,
-  `kernel/time/timer.c`) with IRQs locally off inside the timer base
-  lock — a genuine corrupted-node spin/fault, not the delivery latch
-  (which parks in userspace with all interrupts dead). This is why
-  M-mode (patch 0031) correctly did *not* fix it.
-- `sysctl`-off / `ipv6.disable=1` on `wlan0 up` → **survives 12 min**
-  (baseline wedges every time in under a minute).
-- A `DEBUG_LIST` + `DEBUG_OBJECTS` build (which perturbs heap layout and
-  timing) did **not** wedge and reached full working Wi-Fi — a classic
-  heisenbug, consistent with a heap/timer-node corruption rather than a
-  logic error.
-
-In 6.18 `MAX_RTR_SOLICITATIONS = -1` (unlimited, RFC 7559), so `wlan0`'s
-`idev->rs_timer` (heap `inet6_dev`) re-arms forever with doubling
-backoff and is queued in the timer wheel across exactly the hang window.
-Disabling IPv6 removes that victim. The *writer* that corrupts the node
-was not pinned to a single line (the esp-hosted driver was audited and
-exonerated for the plain-ifup case: RX/TX are bounded and no command
-traffic flows on a bare ifup — see the hardening note below); on this
-NOMMU kernel with hand-rolled ROM cache-sync thunks, an out-of-slice
-stray write is the leading remaining theory. `ipv6.disable=1` is a
-clean, complete workaround and IPv6 has no use on this badge, so this is
-the shipped state rather than a stopgap.
-
-**Confirmed-latent esp-hosted bugs (hardening TODO, NOT the hang).** A
-2026-07-05 four-path audit + adversarial verification of patch 0008's
-driver confirmed several real lifecycle bugs, all gated on conditions
-that do not occur in normal operation (teardown, a second slave bootup
-event, a GFP_ATOMIC cmd-node alloc failure, or a `write_packet` failure
-— which only happens with the datapath closed). They are documented
-here rather than shipped because they cannot be exercised without fault
-injection, and the command path is boot-race-sensitive (touching it
-unverified is exactly the risk the boot-window batch was deferred for):
-
-- `esp_cmd.c` `esp_cmd_work` send-failure path recycles a cmd node while
-  a waiter still owns it → the same node can reach `cmd_free_queue`
-  twice (double `list_add`). Fix: on send failure set
-  `cmd_resp = cmd_node->cmd_code` and `wake_up_interruptible` with
-  `cur_cmd` still set; let the single waiter release + recycle.
-- `esp_cmd.c` `reset_cmd_node` never clears `in_cmd_queue`, so a later
-  reuse of that pool slot can `list_del` a node no longer on the pending
-  queue (poisoned-pointer `list_del`). Fix: clear the flag after the
-  `list_del`.
+- `esp_cmd.c` `esp_cmd_work` send-failure path recycles a cmd node a
+  waiter still owns → double `list_add` on `cmd_free_queue`. Fix: set
+  `cmd_resp` and `wake_up_interruptible` with `cur_cmd` still set; let
+  the single waiter release.
+- `esp_cmd.c` `reset_cmd_node` never clears `in_cmd_queue` → a reused
+  pool slot can `list_del` a node no longer queued. Fix: clear the flag
+  after the `list_del`.
 - `esp_bt.c` `esp_bt_send_frame` double-frees on `hdev->send` failure
-  (both the realloc and skb_push paths free a buffer the HCI core also
-  frees). Fix: honor the "core frees on <0 return" contract.
+  (the HCI core frees on <0 return).
 - `esp_bt.c` `hci_register_dev` failure leaves `adapter->hcidev`
-  dangling; `main.c` `esp_remove_card` deinits BT before flushing the RX
+  dangling; `esp_remove_card` deinits BT before flushing the RX
   workqueue (teardown UAF).
 
-## Boot freeze in the display + backlight bring-up window
+## CLIC interrupt-delivery erratum — avoided, not fixed
 
-**Reframed 2026-07-04 by a `freezetest.py` campaign — this is far more
-frequent than the old "~1/30" estimate, and the pwm-c6 fixes did NOT
-eliminate it.** It is the same CLIC concurrency wedge (see top of this
-file / RUNTIME-WEDGE.md) hitting during the busiest interrupt window of
-boot: the esp-hosted → pwm-c6 → pwm-backlight → DSI display bring-up,
-where deferred-probe workqueues, C6 SPI traffic, and DSI GDMA all run
-against the periodic tick.
+Silicon-level: an interrupt arriving cycle-coincident with a
+privilege-dropping `mret` latches the core into never accepting another
+interrupt (root-caused at register level via the patch-0025 tracer;
+every software recovery attempt failed). Avoided since patch 0031 —
+userspace runs at physical M-mode, so no `mret` ever drops privilege;
+churn reproducers that wedged in 25–90 s run clean. The MWDT (patch
+0019) stays armed as the backstop: if the latch ever resurfaces,
+recovery is a ≤30 s auto-reset. Trade-off of M-mode userspace: user
+code can touch CSRs/MMIO (NOMMU never had memory isolation anyway).
+Full forensic trail: [`RUNTIME-WEDGE.md`](RUNTIME-WEDGE.md).
 
-**Campaign results (30 cold cycles each, independent — 45 s settle
-between trials so a wedged badge fully MWDT-resets before the next
-reset):**
+## Minor / cosmetic
 
-- **Clean kernel (0001–0024, no diagnostic tracer): 18/30 booted to
-  login first-try (60%), 12/30 froze (40%).** Every freeze was at
-  exactly one of two adjacent lines: `pwm-c6 … backlight pwm
-  registered` (5) or `[drm] fb0: … frame buffer device` (7). Nothing
-  froze after the display came up.
-- **Tracer kernel (0001–0028): ~25–33% first-try freeze**, scattered
-  earlier in boot (the per-interrupt PSRAM+cache-flush of patch 0025
-  shifts where the wedge lands but does not cause it — removing the
-  tracer did not fix the freeze).
+- BME680 pressure reads ~227 kPa instead of ~100 kPa (BME688/690
+  calibration-coefficient difference) — cosmetic.
+- Three `bmi270-init-data.fw ... failed with error -2` lines on every
+  boot: a probe-before-rootfs race; patch 0009 retries after the
+  squashfs mounts and the successful load is silent. Harmless.
+- `ssh`/`dbclient` in the first ~40 s after boot pauses at "Waiting for
+  kernel randomness to be initialised" until the crng seeds.
+- The panel needs a 16-px vertical shift workaround
+  (`ESP32P4_PANEL_VSHIFT` in patch 0003) — suspected vsync-line
+  miscount, revisit if it ever drifts.
 
-So the pwm-c6 first-apply fixes (0011), the cmd-channel ownership fix
-(0008) and the value dedupe (0018) all still leave this freeze — they
-address real bugs in that path but not the underlying CLIC wedge.
+## Resolved (details in git history / RUNTIME-WEDGE.md)
 
-**Practical impact is softer than the freeze rate suggests:** the MWDT
-(patch 0019) auto-resets each frozen boot in ≤30 s and each attempt is
-independent (~60% baseline, ~73% with patch 0030, ~97% with patch
-0031 — see below), so the
-badge normally reaches login after 1–2 retries (≈0–60 s of extra
-wait), not bricked. But the first-try number is the honest one, not
-"~97%".
-
-**Confirmed by a cold power-cycle campaign (2026-07-04).** The warm
-`freezetest.py` resets only the P4, so it was fair to worry the C6
-keeping a stale esp-hosted session across resets inflated the rate. It
-does not: 13 *physical* power cycles (both chips reset together, C6
-USB disconnected) gave **8/13 = 62% first-try success** — statistically
-indistinguishable from the warm 18/30 = 60%. Combined 26/43 = ~60%. So
-the ~40% freeze is real, P4-side (the display + backlight bring-up), and
-independent of the C6's reset state; the harness caveats are ruled out.
-That baseline number was **~60% first-try cold-boot success.**
-
-**Partially fixed by patch 0030 (2026-07-04): the fb0-window freeze
-class is eliminated; first-try success is now ~73%.** A code-level
-audit of the freeze window found both freeze clusters sit inside the
-Bluetooth HCI power-on burst: `init_bt()` ran in esp-hosted's boot-up
-event handler, and `hci_register_dev()` immediately queues the HCI
-core's power_on sequence — dozens of HCI command/event round trips
-over SPI, each costing a handshake/data-ready rising-edge IRQ pair
-plus SPI→RX→events workqueue hops, spread over ~5.7–7.7 s and
-precisely covering the pwm-c6 registration line (freeze A) and
-fbcon's takeover of fb0 (freeze B). Nothing uses BT during boot, so
-patch 0030 registers the HCI device from a delayed work 15 s after
-caps-done instead (`hci0` now appears at ~21 s uptime — re-verified
-present and registering cleanly).
-
-90-cycle verification (3 × 30 warm `freezetest.py` runs, same harness
-and 45 s settle as the baseline): **66/90 = 73.3% first-try success**
-(24, 20, 22 per run) vs the 26/43 = 60.5% baseline. Class-level:
-
-- **fb0-line freezes: 0/90** (baseline 6/30) — one-sided Fisher
-  p = 1.6×10⁻⁴. The freeze class the HCI burst overlapped is gone.
-- **caps-window freezes: 24/90 = 26.7%** (baseline 6/30 = 20%;
-  statistically unchanged, p = 0.32). All 24 stopped at the
-  `esp_reg_notifier: cfg80211 regulatory domain callback` line (19) or
-  the `pwm-c6 … registered` line (5): the wedge latches somewhere in
-  the ~5.45–6.4 s stretch where the deferred-probe cascade, the
-  cfg80211 regulatory-domain work (regdb signature verification), rcS
-  userspace churn, and the start of `fbdev_setup_work` coexist. This
-  class predates 0030 (it was baseline freeze A) and is the remaining
-  target.
-- The overall-rate comparison alone gives one-sided p = 0.097 (power
-  limited by the N=43 baseline), so the honest headline is "~73%
-  first-try, one of the two freeze classes eliminated" — not "fixed".
-
-**Tried and falsified (2026-07-04): dropping
-`CFG80211_REQUIRE_SIGNED_REGDB`.** 19 of the 24 residual freezes had
-the regulatory-domain callback as their last line, so the regdb
-signature verification (PKCS#7/RSA over the `CONFIG_EXTRA_FIRMWARE`
-regdb, ~5.5 s) was the obvious suspect. Disabling it (via
-`CFG80211_CERTIFICATION_ONUS=y`, which un-gates the `default y`)
-removed the reg work from the window entirely — and made things
-*worse*: 17/30 = 57% first-try (13 freezes, all at the now-last
-pwm-registered line; P(≤17/30 | 73.3%) ≈ 0.03). The fb0 class stayed
-at zero, so 0030's fix held; only the caps-window class grew. Reverted.
-Lesson: the caps-window hazard is **timing-sensitive, not attributable
-to any single work item** — the callback was the last *printk* before
-a quiet stretch, not the trigger, and removing ~100 ms of serial
-kernel work reshuffled the mret race unfavorably. Freeze-line
-adjacency is weak evidence here; treat "last line before silence" as a
-window marker only.
-
-Remaining untried levers for the caps-window class: delay
-`driver_deferred_probe_trigger()` out of the events-worker tail (same
-delayed-work pattern as 0030), shift `fbdev_setup_work` past the
-window, or thin early rcS — but per the regdb result, expect
-timing-lottery effects and demand a full 30+-cycle campaign per lever.
-
-**Resolved by patch 0031 (2026-07-05): 29/30 = 96.7% first-try.** The
-levers above became moot: 0031 runs userspace at M-mode, removing the
-privilege-dropping mrets the CLIC latch needs (see RUNTIME-WEDGE.md),
-and the caps-window class went to **0/30** (vs 24/90 on the 0030
-kernel, p = 4×10⁻⁴; overall 29/30 vs 66/90, p = 3×10⁻³). Both
-historical freeze lines are clean. The single residual freeze stopped
-at `mmcblk0: p1` (~3.7 s) — a new, rare class of unknown mechanism;
-the MWDT auto-reset covers it. The number to quote is **~97%
-first-try boot success**.
-
-### Older notes on the pwm-c6 path (bugs fixed, not the whole story)
-
-The pwm-c6 first-apply fixes below address genuine bugs in the backlight
-command path but, per the campaign above, do not remove the freeze.
-
-**Candidate contributing cause (unconfirmed, fix applied, pending hardware
-verification):** patch 0011 only skips the *first* `.apply()` call;
-every subsequent brightness change (including the one after the SECOND
-`.apply()`, right after registration) goes through `cmd_set_backlight()`
-in patch 0008's SPI command channel. That channel's timeout-cleanup path
-had a bug — a caller whose own 500 ms wait timed out would unconditionally
-null out `adapter->cur_cmd`/`cmd_resp` even when a *different* command was
-still legitimately in flight, discarding that command's real response and
-letting a second command start before the first one's response returned.
-Patch 0008 now guards the clear with an ownership check (`cur_cmd_seq`,
-see `esp_cmd_release_if_owner()`). This may reduce the residual freeze
-rate, but does not fix the separate, still-open architectural gap
-described next — a command can still be silently starved rather than
-clobbering another one. Needs a `tools/freezetest.py` run to confirm any
-change in frequency; not verified on hardware yet.
-
-**Second candidate fix shipped (2026-07, pending hardware verification):**
-patch 0018 adds value-level dedupe to pwm-esp-hosted-c6. The second
-probe-time apply (pwm-backlight's post-register
-`backlight_update_status`) computes exactly the C6 slave's boot duty
-(`BL_DISPLAY_INITIAL_DUTY` = 76 = DT `default-brightness-level`), so
-seeding a last-sent cache with 76 and eliding same-value writes removes
-*all* backlight SPI traffic from the deferred-probe race window — the
-only command this driver ever issued during the freeze window was that
-redundant one. Verify together with the 0014-0017 batch via
-`tools/freezetest.py` (~90 cycles for real confidence at a 1/30 rate).
-
-**Related, still-open follow-up — `esp_cmd_work()` busy-bail doesn't
-drain the queue:** when `adapter->cur_cmd` is already busy,
-`esp_cmd_work()` (patch 0008) just logs "Busy in another cmd execution"
-and returns, without rescheduling itself (there's a code comment
-admitting this: `/* We should queue ourself here and remove the queuing
-from process_cmd_resp */`). A command that gets queued while busy is only
-serviced if some unrelated caller happens to trigger the workqueue again
-before its own short timeout (500 ms for the WHY2025-added commands, 5 s
-for the generic cfg80211 path) expires — otherwise it just silently times
-out, never having been sent. This is the likely reason the three
-WHY2025-added commands' timeouts fire "often" per their own comments, and
-is a plausible root cause underneath the clobbering bug above. Fixing it
-properly means having `esp_cmd_work` reschedule itself once `cur_cmd`
-actually clears (e.g. from `process_cmd_resp()` and from the timeout
-paths), which is a larger change to the command-channel's locking than
-the ownership-check fix — deferred until it can be validated with a real
-boot-cycle load test.
-
-**Timing shift in this window (2026-07-05, patch 0033 —
-hardware-verified same day):** the DSI glue's two bring-up timers were
-reworked — `fbdev_setup_work` now fires 1 s after probe and
-`dpi_enable_work` is armed deterministically from an
-`atomic_commit_tail` hook instead of a fixed 3 s timer. 30-cycle
-freezetest (warm RTS, SD card inserted): every one of the 23 successful
-cycles carried the fbcon-switch, `[drm] fb0`, and GDMA-armed lines —
-the silent shadow-fb `vzalloc(1 MB)` failure mode never fired — with
-fbcon at median 5.54 s (was 7.24) and video-on at median 5.69 s (was
-10.0). The campaign's failures were NOT in this patch's window: 5×
-`mmcblk0: p1` at 3.7 s (below), 1× post-display at ~5.6 s (comparable
-to the old residual rate), 1× capture artifact. Fn+Esc sleep/wake
-user-verified 2026-07-05 (wake latency drops 3 s → ~0).
-
-**`mmcblk0: p1` freeze class, sharpened (2026-07-05):** the same
-30-cycle warm campaign — the first one run with an SD card confirmed
-inserted — hit this class 5/30 times (vs 1/30 in the 0031 campaign,
-card state unrecorded). All watchdog-recovered. The card-presence
-correlation is now the leading hypothesis; a card-out 30-cycle
-campaign would settle it. Freezes at exactly the partition-scan line
-predate all 2026-07-05 changes (nothing new runs at 3.7 s: fbdev work
-fires at ~4.4 s, S15sdcard forks at rcS ~4 s+).
-
-## Cold boots are far less reliable than warm resets
-
-**Status: OPEN — two mitigations shipped 2026-07-05 (patches 0034, 0035),
-pending a cold-boot campaign.**
-
-The headline ~97 % first-try boot figure was measured with
-`tools/freezetest.py` RTS resets, which reset **only the P4** — the C6
-keeps running. A cable plug-in is a dual-chip cold boot, and that path
-was never campaigned post-0031. A live-captured session (2026-07-05,
-serial logger attached across repeated cable plugs, old 0001–0032
-firmware) saw ~5 of 6 cold boots die, in three distinct classes:
-
-1. **~21 s, last line `esp32_spi: esp_bt_init_work: ESP Bluetooth
-   init` (×2).** The badge looks fully booted (login prompt on the
-   panel from ~7 s), then wedges into the MWDT just as the deferred BT
-   registration burst (patch 0030) hits the freshly cold-booted C6.
-   ROM banner `rst:0x7 (HP_SYS_HP_WDT_RESET)`, `Core0 Saved PC
-   0x4807cce4` both times. This is the "it hangs before I can even
-   type" experience. *Mitigation shipped: patch 0035 makes HCI
-   registration opt-in at runtime (`bt_enable` knob, written by the
-   HCI tools) — no BT traffic at boot at all.*
-2. **~1.4 s, inside the esp32-c6-kick probe window (×1).** Froze
-   between c6-kick's IO_MUX line and its "C6 released" line — and sat
-   there **hard-dead with no watchdog reset**, because esp32p4_wdt
-   probed at device_initcall *after* drivers/misc in link order.
-   *Mitigation shipped: patch 0034 arms the MWDT at subsys_initcall,
-   before any device_initcall probe can hang; freezes before ~0.3 s
-   remain uncovered (arming in the boot shim is the eventual fix).*
-3. **~3.7 s, right after `mmcblk0: p1` (×1).** The already-documented
-   residual class from the 0031 campaign (1/30 warm) — apparently more
-   frequent cold. SD card (SPCC 29 GiB) was inserted throughout;
-   whether card presence modulates this class is still open.
-
-Plus one boot that hit `Panic handler entered multiple times. Abort
-panic handling. Rebooting ...` (an ESP-IDF panic-handler string) right
-after the 0.024 s console switch — unexplained, one occurrence.
-
-Verification needs *physical* power cycles (RTS cannot produce them):
-either a hand campaign or a smart-plug harness. Until then treat the
-97 % figure as warm-reset-only, and 0034/0035 as unverified.
-
-## BMI270 internal status check sometimes fails
-
-After firmware upload, the chip's `INTERNAL_STATUS` register sometimes
-doesn't read `MSG_INIT_OK`, and the driver returns -ENODEV. Boot
-continues fine; sensor isn't enumerated on those cycles.
-
-This surfaced with the 6.12 → 6.18 bump but is **not** an upstream
-regression: the `drivers/iio/imu/bmi270/` driver first shipped in
-v6.13, and its firmware-load/status-check path is unchanged from v6.13
-through current mainline — a single unmasked `INTERNAL_STATUS` read
-after a fixed 140–160 ms sleep, with no poll loop and no retry of the
-upload. The 6.12-era build masked one-shot init failures behind an
-`S05bmi270` sysfs-rebind init script that was dropped from the overlay
-when the in-kernel retry-trigger (patch 0009) replaced it — but patch
-0009 only retries `request_firmware()` -ENOENT, not a failed
-`INTERNAL_STATUS` check, which is terminal.
-
-The upstream check is also over-strict: it compares the whole register
-against `MSG_INIT_OK` (0x01) instead of masking with
-`BMI270_INTERNAL_STATUS_MSG_MSK` (defined but unused upstream), so any
-set error/reserved bit fails init even when the message field reads
-INIT_OK. The 8 KB config upload also runs over a ~100 kHz bit-banged
-I²C bus with weak ~45 kΩ internal pull-ups, leaving little timing
-margin.
-
-**Fix shipped:** patch 0013 replaces the single read with a masked poll
-(20 ms steps, 500 ms ceiling) and, on timeout, soft-resets the chip
-(CMD 0xB6) and re-uploads, up to 3 attempts, logging the raw
-`internal_status` byte per failed attempt.
-
-**Hardware-verified 2026-07-04 (8/8 cold boots):** `iio:device1`
-enumerated as `bmi270` on every boot with correct, calibrated data —
-accel Z ≈ −9.9 m/s² (gravity), gyro live. `INTERNAL_STATUS` never
-failed across the 8 boots, so patch 0013's terminal-failure retry path
-wasn't itself exercised; init was reliable regardless.
-
-Note a benign red herring in dmesg on **every** boot: three
-`Direct firmware load for bmi270-init-data.fw failed with error -2`
-(ENOENT) lines at ~3.42–3.49 s. That's a probe-before-rootfs race —
-the driver's first firmware attempts run before the squashfs root
-mounts (~3.69 s). Patch 0009's `-ENOENT` retry then reloads it once
-the rootfs is up; the successful attempt is silent (the kernel firmware
-loader only logs failures), which is why the sensor ends up fully
-configured despite the scary-looking log. Not worth chasing unless the
-probe order changes; if it ever needs silencing, build the firmware
-into `CONFIG_EXTRA_FIRMWARE` (it's currently only in the rootfs
-overlay).
+- **`wlan0 up` hang** — IPv6 `rs_timer` timer-wheel corruption, not the
+  CLIC erratum; shipped fix is `ipv6.disable=1` on the cmdline
+  (2026-07-05, soak-verified).
+- **Cold boots wedging at the ~21 s Bluetooth HCI burst** — HCI
+  registration is opt-in at runtime since patch 0035 (the HCI tools set
+  the `bt_enable` knob themselves); verified by a cold-boot hand
+  campaign.
+- **Freezes before the watchdog armed were hard-dead** — patch 0034
+  arms the MWDT at `subsys_initcall`, ahead of every device probe.
+- **Boot freezes in the display/backlight bring-up window** — the CLIC
+  erratum during boot's busiest interrupt window; first-try success
+  went ~60% → ~73% (patch 0030, BT-init deferral) → ~97% (patch 0031,
+  M-mode userspace). Campaign data and the falsified regdb lever are in
+  the git log.
+- **Display bring-up latency** — two open-coded timers in the DSI glue
+  replaced by a deterministic commit-tail hook (patch 0033): fbcon at
+  ~5.5 s (was 7.2), video at ~5.7 s (was 10.0), verified over 23
+  boots.
+- **BMI270 intermittent init `-ENODEV`** — masked `INTERNAL_STATUS`
+  poll + soft-reset/re-upload retries (patch 0013), verified 8/8 cold
+  boots.

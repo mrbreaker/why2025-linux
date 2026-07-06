@@ -9,7 +9,7 @@ ascending order of cost; each one independently moves the needle.
 > poisoning via the still-live `regs->cause = -1UL` site), 0015 (ROM
 > cache-thunk IRQ exclusion + no more whole-L2 invalidate per exec),
 > and 0016 (systimer `-ETIME` on missed oneshot arm + torn-read fix).
-> See KNOWN-ISSUES "Candidate fixes shipped". **Run the reproducer
+> See the patch table in `patches/linux/README.md`. **Run the reproducer
 > against a build with these before investing in steps 3-6.** They are
 > not yet built or hardware-verified.
 >
@@ -143,8 +143,8 @@ ascending order of cost; each one independently moves the needle.
 > 1. **The wedge is unchanged.** `/bin/true` churn wedged in ~35–65 s
 >    (baseline 35–90 s); a `wifi-connect` run wedged during `wlan0`
 >    bring-up. WDT reset, same signature. (Bringing `wlan0` up turned
->    out to be the most reliable wedge trigger of all — see KNOWN-ISSUES
->    "Wi-Fi is effectively non-functional".)
+>    out to be the most reliable wedge trigger of all — since resolved —
+>    `ipv6.disable=1`, see KNOWN-ISSUES "Resolved".)
 > 2. **The drain provably never had work to do.** An instrumented build
 >    (counters in the wedge-trace carveout, read back over `/dev/mem`)
 >    showed 4048 executions of the drain scan across login + churn and
@@ -195,8 +195,8 @@ ascending order of cost; each one independently moves the needle.
 > wedge**. It reproduces identically on the M-mode kernel, and its
 > Saved PC is the same *kernel* address every time —
 > `detach_if_pending` (kernel/time/timer.c), i.e. an IRQs-off infinite
-> loop walking a corrupted timer-wheel list, not a delivery latch. See
-> KNOWN-ISSUES "Wi-Fi" for the new investigation state.
+> loop walking a corrupted timer-wheel list, not a delivery latch. Since
+> resolved with `ipv6.disable=1` — see KNOWN-ISSUES "Resolved".
 
 ## 1. Remove `idle=poll` from cmdline (cheap, ~5 min)
 
