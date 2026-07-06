@@ -257,7 +257,10 @@ esptool --chip esp32c6 -p /dev/cu.<c6-port> -b 460800 write-flash 0x0 out/esp32c
 
 Two ports, not one: the side USB-C is the P4 (CH340), the bottom USB-C
 is the C6's native USB. Pass `-` as the third argument to skip the C6
-image.
+image. Flash the P4 before the C6 and power-cycle afterwards: a C6
+flashed while the factory P4 firmware still runs can be left stuck in
+download mode (black screen; hardware-observed 2026-07-06 — the kernel's
+c6-kick reset pulse does not recover it, a power cycle or reflash does).
 
 ## Running sensorpanel
 

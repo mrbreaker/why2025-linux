@@ -74,7 +74,11 @@ esptool --chip esp32c6 -p /dev/<c6-port> -b 460800 write-flash 0x0 esp32c6.bin
 ```
 
 Find the ports with `ls /dev/cu.*` (macOS) or `ls /dev/ttyUSB*
-/dev/ttyACM*` (Linux); the P4 enumerates as a CH340. To build from
+/dev/ttyACM*` (Linux); the P4 enumerates as a CH340, the C6 as
+`usbmodem`/ACM. **Flash the P4 first, then the C6, then power-cycle
+the badge** (unplug all cables). A C6 flashed while the factory P4
+firmware is still running can be left stuck in download mode — screen
+stays black; a power cycle or a C6 reflash recovers it. To build from
 source instead: [`BUILDING.md`](BUILDING.md).
 
 ## Screenshots
